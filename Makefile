@@ -1,15 +1,20 @@
+CONTIKI = ./deps/contiki
+
+ifndef TARGET
+TARGET=sky
+endif
+
 CONTRIB_DIR = .
 TEST_DIR = ./tests
-LLQUEUE_DIR = $(CONTRIB_DIR)/CLinkedListQueue
-VPATH = src
+# LLQUEUE_DIR = $(CONTRIB_DIR)/CLinkedListQueue
 
-GCOV_OUTPUT = *.gcda *.gcno *.gcov 
-GCOV_CCFLAGS = -fprofile-arcs -ftest-coverage
+# GCOV_OUTPUT = *.gcda *.gcno *.gcov 
+# GCOV_CCFLAGS = -fprofile-arcs -ftest-coverage
 SHELL  = /bin/bash
 CFLAGS += -Iinclude -Werror -Werror=return-type -Werror=uninitialized -Wcast-align \
 	  -Wno-pointer-sign -fno-omit-frame-pointer -fno-common -fsigned-char \
 	  -Wunused-variable \
-	  $(GCOV_CCFLAGS) -I$(LLQUEUE_DIR) -Iinclude -g -O2 -fPIC
+	  $(GCOV_CCFLAGS) -I$(LLQUEUE_DIR) -Iinclude -g -O2
 
 UNAME := $(shell uname)
 
@@ -25,7 +30,7 @@ SHAREDFLAGS = -shared
 SHAREDEXT = so
 endif
 
-OBJECTS = raft_server.o raft_server_properties.o raft_node.o raft_log.o
+OBJECTS = src/raft_server.o src/raft_server_properties.o src/raft_node.o src/raft_log.o
 
 all: static shared
 
@@ -73,8 +78,12 @@ do_infer:
 	make clean
 	infer -- make static
 
-clean:
-	@rm -f $(TEST_DIR)/main_test.c *.o $(GCOV_OUTPUT); \
-	if [ -f "libraft.$(SHAREDEXT)" ]; then rm libraft.$(SHAREDEXT); fi;\
-	if [ -f libraft.a ]; then rm libraft.a; fi;\
-	if [ -f tests_main ]; then rm tests_main; fi;
+# clean:
+# 	# @rm -f $(TEST_DIR)/main_test.c *.o $(GCOV_OUTPUT); \
+# 	rm -f src/*.o; \
+# 	if [ -f "libraft.$(SHAREDEXT)" ]; then rm libraft.$(SHAREDEXT); fi;\
+# 	if [ -f libraft.a ]; then rm libraft.a; fi;\
+# 	if [ -f tests_main ]; then rm tests_main; fi;
+
+CONTIKI_WITH_RIME = 1
+include $(CONTIKI)/Makefile.include

@@ -83,13 +83,20 @@ typedef struct
     /** the entry's term at the point it was created */
     unsigned int term;
 
+    /** the entry's index */
+    unsigned int idx;
+
     /** the entry's unique ID */
     unsigned int id;
 
     /** type of entry */
     int type;
 
+    // integrate raft_entry_data_t into this one
+    // start with fixed len data?
     raft_entry_data_t data;
+    // pointer to next element for linked list
+    raft_entry_t *next;
 } raft_entry_t;
 
 /** Message sent from client to server.
@@ -361,6 +368,8 @@ typedef struct
      * For safety reasons this callback MUST flush the change to disk.
      * Return 0 on success.
      * Return RAFT_ERR_SHUTDOWN if you want the server to shutdown. */
+    // NOTE we don't have disk, so maybe we don't need a separate log?
+    // access the raft library log directly.
     func_logentry_event_f log_offer;
 
     /** Callback for removing the oldest entry from the log
