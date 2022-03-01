@@ -16,12 +16,16 @@
 
 #include "raft.h"
 
+#include "contiki.h"
+#include "lib/memb.h"
+
 #define RAFT_NODE_VOTED_FOR_ME        (1 << 0)
 #define RAFT_NODE_VOTING              (1 << 1)
 #define RAFT_NODE_HAS_SUFFICIENT_LOG  (1 << 2)
 #define RAFT_NODE_INACTIVE            (1 << 3)
 #define RAFT_NODE_VOTING_COMMITTED    (1 << 4)
 #define RAFT_NODE_ADDITION_COMMITTED  (1 << 5)
+#define MAX_NODES                     7
 
 typedef struct
 {
@@ -35,12 +39,15 @@ typedef struct
     int id;
 } raft_node_private_t;
 
+// managed memory to allocate/deallocate entry members in the list
+MEMB(raft_nodes_mem, raft_node_private_t, MAX_NODES);
+
 raft_node_t* raft_node_new(void* udata, int id)
 {
-    raft_node_private_t* me;
-    me = (raft_node_private_t*)calloc(1, sizeof(raft_node_private_t));
+    raft_node_private_t* me = memb_alloc(&raft_nodes_mem);
     if (!me)
         return NULL;
+
     me->udata = udata;
     me->next_idx = 1;
     me->match_idx = 0;
@@ -51,7 +58,7 @@ raft_node_t* raft_node_new(void* udata, int id)
 
 void raft_node_free(raft_node_t* me_)
 {
-    free(me_);
+    memb_free(&raft_nodes_mem, me_);
 }
 
 int raft_node_get_next_idx(raft_node_t* me_)

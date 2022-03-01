@@ -62,24 +62,24 @@ int mod(int a, int b)
 /**** Ignore for now ****/
 int log_load_from_snapshot(log_t *me_, int idx, int term)
 {
-    log_private_t* me = (log_private_t*)me_;
+    // log_private_t* me = (log_private_t*)me_;
 
-    log_clear(me_);
+    // log_clear(me_);
 
-    raft_entry_t ety;
-    ety.data.len = 0;
-    ety.id = 1;
-    ety.term = term;
-    ety.type = RAFT_LOGTYPE_SNAPSHOT;
+    // raft_entry_t ety;
+    // ety.data.len = 0;
+    // ety.id = 1;
+    // ety.term = term;
+    // ety.type = RAFT_LOGTYPE_SNAPSHOT;
 
-    int e = log_append_entry(me_, &ety);
-    if (e != 0)
-    {
-        assert(0);
-        return e;
-    }
+    // int e = log_append_entry(me_, &ety);
+    // if (e != 0)
+    // {
+    //     assert(0);
+    //     return e;
+    // }
 
-    me->base = idx - 1;
+    // me->base = idx - 1;
 
     return 0;
 }
@@ -91,7 +91,7 @@ log_t* log_alloc(int initial_size)
     me->size = initial_size;
     list_init(raft_entries_list);
     // save ref to log_private_t
-    me->entries_list = raft_entries_list;
+    me->entries_list = &raft_entries_list;
 
     return (log_t*)me;
 }
@@ -113,8 +113,8 @@ void log_clear(log_t* me_)
 {
     log_private_t* me = (log_private_t*)me_;
     // loop through the list and delete all entries
-    while(list_length(me->entries_list) != 0) {
-        list_pop(me->entries_list);
+    while(list_length(*(me->entries_list)) != 0) {
+        list_pop(*(me->entries_list));
     }
 
     me->count = 0;
@@ -131,17 +131,20 @@ int log_append_entry(log_t* me_, raft_entry_t* ety)
     int e;
 
     // check if we have space
-    if (list_length(me->entries_list) == MAX_ENTRIES) {
+    if (list_length(*(me->entries_list)) == MAX_ENTRIES) {
         // TODO loop back
         return 0;
     }
 
     // allocate mem for new entry
     raft_entry_t* new_ety = memb_alloc(&raft_entries_mem);
+    if (!new_ety)
+        return 1;   //TODO which error? 
+
     memcpy(new_ety, ety, sizeof(raft_entry_t));
 
     // add to our list
-    list_add(me->entries_list, new_ety);
+    list_add(*(me->entries_list), new_ety);
 
     if (me->cb && me->cb->log_offer)
     {
@@ -150,10 +153,10 @@ int log_append_entry(log_t* me_, raft_entry_t* ety)
         // by the callback function below (outside the library)
         // TODO for now we don't have flash, so maybe access outside
 
-        e = me->cb->log_offer(me->raft, ud, &new_ety, idx);
+        e = me->cb->log_offer(me->raft, ud, new_ety, idx);
         if (0 != e)
             return e;
-        raft_offer_log(me->raft, &new_ety, idx);
+        raft_offer_log(me->raft, new_ety, idx);
     }
 
     me->count++;
@@ -165,7 +168,6 @@ int log_append_entry(log_t* me_, raft_entry_t* ety)
 raft_entry_t* log_get_from_idx(log_t* me_, int idx, int *n_etys)
 {
     log_private_t* me = (log_private_t*)me_;
-    int i;
 
     assert(0 <= idx - 1);
 
@@ -178,7 +180,7 @@ raft_entry_t* log_get_from_idx(log_t* me_, int idx, int *n_etys)
     // we get the first entry matching the idx
     raft_entry_t *ety, *first_ety;
     int list_pos = 0;
-    for(ety = list_head(me->entries_list);
+    for(ety = list_head(*(me->entries_list)), first_ety = NULL;
         ety != NULL;
         ety = list_item_next(ety), list_pos++)
     {
@@ -190,7 +192,7 @@ raft_entry_t* log_get_from_idx(log_t* me_, int idx, int *n_etys)
     // and count number of entries till last one
     // TODO for now this is just the difference from the tail
     // TODO verify this
-    int logs_till_end_of_log = list_length(me->entries_list) - list_pos;
+    int logs_till_end_of_log = list_length(*(me->entries_list)) - list_pos;
 
     *n_etys = logs_till_end_of_log;
     return first_ety;
@@ -199,7 +201,6 @@ raft_entry_t* log_get_from_idx(log_t* me_, int idx, int *n_etys)
 raft_entry_t* log_get_at_idx(log_t* me_, int idx)
 {
     log_private_t* me = (log_private_t*)me_;
-    int i;
 
     if (idx == 0)
         return NULL;
@@ -214,12 +215,12 @@ raft_entry_t* log_get_at_idx(log_t* me_, int idx)
     idx -= 1;
 
     raft_entry_t *ety;
-    for(ety = list_head(me->entries_list);
+    for(ety = list_head(*(me->entries_list));
         ety != NULL;
         ety = list_item_next(ety))
     {
         if (ety->idx == idx)
-            return idx;
+            return ety;
     }
 
     return NULL;
@@ -241,7 +242,7 @@ int log_delete(log_t* me_, int idx)
         idx = me->base;
 
     raft_entry_t *ety;
-    for(ety = list_head(me->entries_list);
+    for(ety = list_head(*(me->entries_list));
         ety != NULL;
         ety = list_item_next(ety))
     {
@@ -293,7 +294,7 @@ raft_entry_t *log_peektail(log_t * me_)
     if (0 == me->count)
         return NULL;
 
-    return list_tail(me->entries_list);
+    return list_tail(*(me->entries_list));
 }
 
 void log_empty(log_t * me_)
@@ -309,7 +310,7 @@ void log_free(log_t * me_)
 {
     log_private_t* me = (log_private_t*)me_;
 
-    free(me->entries_list);
+    free(*(me->entries_list));
     free(me);
 }
 

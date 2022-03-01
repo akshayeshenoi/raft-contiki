@@ -10,6 +10,8 @@
 #ifndef RAFT_PRIVATE_H_
 #define RAFT_PRIVATE_H_
 
+#include "lib/list.h"
+
 enum {
     RAFT_NODE_STATUS_DISCONNECTED,
     RAFT_NODE_STATUS_CONNECTED,
@@ -46,6 +48,8 @@ typedef struct {
     int timeout_elapsed;
  
     raft_node_t* nodes;
+    list_t* nodes_list;
+
     int num_nodes;
 
     int election_timeout;

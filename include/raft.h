@@ -78,7 +78,7 @@ typedef struct
 } raft_entry_data_t;
 
 /** Entry that is stored in the server's entry log. */
-typedef struct
+struct raft_entry_struct
 {
     /** the entry's term at the point it was created */
     unsigned int term;
@@ -96,8 +96,10 @@ typedef struct
     // start with fixed len data?
     raft_entry_data_t data;
     // pointer to next element for linked list
-    raft_entry_t *next;
-} raft_entry_t;
+    struct raft_entry_struct *next;
+};
+
+typedef struct raft_entry_struct raft_entry_t;
 
 /** Message sent from client to server.
  * The client sends this message to a server with the intention of having it

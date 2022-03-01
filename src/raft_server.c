@@ -20,6 +20,9 @@
 #include "raft_log.h"
 #include "raft_private.h"
 
+#include "contiki.h"
+#include "lib/list.h"
+
 #ifndef min
 #define min(a, b) ((a) < (b) ? (a) : (b))
 #endif
@@ -27,6 +30,10 @@
 #ifndef max
 #define max(a, b) ((a) < (b) ? (b) : (a))
 #endif
+
+raft_server_private_t raft_server_private;
+// use linked list for nodes (as opposed to contiguous array)
+LIST(raft_nodes_list);
 
 static void __log(raft_server_t *me_, raft_node_t* node, const char *fmt, ...)
 {
@@ -52,8 +59,7 @@ void raft_randomize_election_timeout(raft_server_t* me_)
 
 raft_server_t* raft_new()
 {
-    raft_server_private_t* me =
-        (raft_server_private_t*)calloc(1, sizeof(raft_server_private_t));
+    raft_server_private_t* me = &raft_server_private;
     if (!me)
         return NULL;
     me->current_term = 0;
@@ -64,7 +70,6 @@ raft_server_t* raft_new()
     raft_randomize_election_timeout((raft_server_t*)me);
     me->log = log_new();
     if (!me->log) {
-        free(me);
         return NULL;
     }
     me->voting_cfg_change_log_idx = -1;
@@ -73,6 +78,10 @@ raft_server_t* raft_new()
 
     me->snapshot_in_progress = 0;
     raft_set_snapshot_metadata((raft_server_t*)me, 0, 0);
+
+    // initialize nodes list
+    list_init(raft_nodes_list);
+    me->nodes_list = &raft_nodes_list; 
 
     return (raft_server_t*)me;
 }
@@ -139,16 +148,17 @@ int raft_election_start(raft_server_t* me_)
 void raft_become_leader(raft_server_t* me_)
 {
     raft_server_private_t* me = (raft_server_private_t*)me_;
-    int i;
 
     __log(me_, NULL, "becoming leader term:%d", raft_get_current_term(me_));
 
     raft_set_state(me_, RAFT_STATE_LEADER);
     me->timeout_elapsed = 0;
-    for (i = 0; i < me->num_nodes; i++)
-    {
-        raft_node_t* node = me->nodes[i];
 
+    raft_node_t* node;
+    for(node = list_head(*(me->nodes_list));
+        node != NULL;
+        node = list_item_next(node))
+    {
         if (me->node == node || !raft_node_is_active(node))
             continue;
 
@@ -161,15 +171,21 @@ void raft_become_leader(raft_server_t* me_)
 int raft_become_candidate(raft_server_t* me_)
 {
     raft_server_private_t* me = (raft_server_private_t*)me_;
-    int i;
 
     __log(me_, NULL, "becoming candidate");
 
     int e = raft_set_current_term(me_, raft_get_current_term(me_) + 1);
     if (0 != e)
         return e;
-    for (i = 0; i < me->num_nodes; i++)
-        raft_node_vote_for_me(me->nodes[i], 0);
+
+    raft_node_t* node;
+    for(node = list_head(*(me->nodes_list));
+        node != NULL;
+        node = list_item_next(node))
+    {
+        raft_node_vote_for_me(node, 0);
+    }
+
     raft_vote(me_, me->node);
     me->current_leader = NULL;
     raft_set_state(me_, RAFT_STATE_CANDIDATE);
@@ -177,10 +193,10 @@ int raft_become_candidate(raft_server_t* me_)
     raft_randomize_election_timeout(me_);
     me->timeout_elapsed = 0;
 
-    for (i = 0; i < me->num_nodes; i++)
+    for(node = list_head(*(me->nodes_list));
+        node != NULL;
+        node = list_item_next(node))
     {
-        raft_node_t* node = me->nodes[i];
-
         if (me->node != node &&
             raft_node_is_active(node) &&
             raft_node_is_voting(node))
@@ -338,10 +354,12 @@ int raft_recv_appendentries_response(raft_server_t* me_,
         raft_entry_t* ety = raft_get_entry_from_idx(me_, point);
         if (raft_get_commit_idx(me_) < point && ety->term == me->current_term)
         {
-            int i, votes = 1;
-            for (i = 0; i < me->num_nodes; i++)
+            int votes = 1;
+            raft_node_t* node;
+            for(node = list_head(*(me->nodes_list));
+                node != NULL;
+                node = list_item_next(node))
             {
-                raft_node_t* node = me->nodes[i];
                 if (me->node != node &&
                     raft_node_is_active(node) &&
                     raft_node_is_voting(node) &&
@@ -666,7 +684,6 @@ int raft_recv_entry(raft_server_t* me_,
                     msg_entry_response_t *r)
 {
     raft_server_private_t* me = (raft_server_private_t*)me_;
-    int i;
 
     if (raft_entry_is_voting_cfg_change(ety))
     {
@@ -690,10 +707,11 @@ int raft_recv_entry(raft_server_t* me_,
     int e = raft_append_entry(me_, ety);
     if (0 != e)
         return e;
-    for (i = 0; i < me->num_nodes; i++)
+    raft_node_t* node;
+    for(node = list_head(*(me->nodes_list));
+        node != NULL;
+        node = list_item_next(node))
     {
-        raft_node_t* node = me->nodes[i];
-
         if (me->node == node ||
             !node ||
             !raft_node_is_active(node) ||
@@ -878,15 +896,19 @@ int raft_send_appendentries(raft_server_t* me_, raft_node_t* node)
 int raft_send_appendentries_all(raft_server_t* me_)
 {
     raft_server_private_t* me = (raft_server_private_t*)me_;
-    int i, e;
+    int e;
 
     me->timeout_elapsed = 0;
-    for (i = 0; i < me->num_nodes; i++)
+
+    raft_node_t* node;
+    for(node = list_head(*(me->nodes_list));
+        node != NULL;
+        node = list_item_next(node))
     {
-        if (me->node == me->nodes[i] || !raft_node_is_active(me->nodes[i]))
+        if (me->node == node || !raft_node_is_active(node))
             continue;
 
-        e = raft_send_appendentries(me_, me->nodes[i]);
+        e = raft_send_appendentries(me_, node);
         if (0 != e)
             return e;
     }
@@ -915,18 +937,16 @@ raft_node_t* raft_add_node(raft_server_t* me_, void* udata, int id, int is_self)
     node = raft_node_new(udata, id);
     if (!node)
         return NULL;
-    void* p = realloc(me->nodes, sizeof(void*) * (me->num_nodes + 1));
-    if (!p) {
-        raft_node_free(node);
-        return NULL;
-    }
-    me->num_nodes++;
-    me->nodes = p;
-    me->nodes[me->num_nodes - 1] = node;
-    if (is_self)
-        me->node = me->nodes[me->num_nodes - 1];
 
-    return me->nodes[me->num_nodes - 1];
+    // change to list_add
+    list_add(*(me->nodes_list), node);
+
+    me->num_nodes++;
+
+    if (is_self)
+        me->node = node;
+
+    return node;
 }
 
 raft_node_t* raft_add_non_voting_node(raft_server_t* me_, void* udata, int id, int is_self)
@@ -948,17 +968,7 @@ void raft_remove_node(raft_server_t* me_, raft_node_t* node)
 
     assert(node);
 
-    int i, found = 0;
-    for (i = 0; i < me->num_nodes; i++)
-    {
-        if (me->nodes[i] == node)
-        {
-            found = 1;
-            break;
-        }
-    }
-    assert(found);
-    memmove(&me->nodes[i], &me->nodes[i + 1], sizeof(*me->nodes) * (me->num_nodes - i - 1));
+    list_remove(*(me->nodes_list), node);
     me->num_nodes--;
 
     raft_node_free(node);
@@ -967,14 +977,17 @@ void raft_remove_node(raft_server_t* me_, raft_node_t* node)
 int raft_get_nvotes_for_me(raft_server_t* me_)
 {
     raft_server_private_t* me = (raft_server_private_t*)me_;
-    int i, votes;
+    int votes = 0;
 
-    for (i = 0, votes = 0; i < me->num_nodes; i++)
+    raft_node_t *node;
+    for(node = list_head(*(me->nodes_list));
+        node != NULL;
+        node = list_item_next(node))
     {
-        if (me->node != me->nodes[i] &&
-            raft_node_is_active(me->nodes[i]) &&
-            raft_node_is_voting(me->nodes[i]) &&
-            raft_node_has_vote_for_me(me->nodes[i]))
+        if (me->node != node &&
+            raft_node_is_active(node) &&
+            raft_node_is_voting(node) &&
+            raft_node_has_vote_for_me(node))
         {
             votes += 1;
         }
@@ -1054,6 +1067,7 @@ void raft_offer_log(raft_server_t* me_, raft_entry_t* ety, const int idx)
     if (!raft_entry_is_cfg_change(ety))
         return;
 
+    // enter here only if it is cfg_change
     int node_id = me->cb.log_get_node_id(me_, raft_get_udata(me_), ety, idx);
     raft_node_t* node = raft_get_node(me_, node_id);
     int is_self = node_id == raft_get_nodeid(me_);
@@ -1178,76 +1192,76 @@ int raft_get_num_snapshottable_logs(raft_server_t *me_)
 
 int raft_begin_snapshot(raft_server_t *me_)
 {
-    raft_server_private_t* me = (raft_server_private_t*)me_;
+    // raft_server_private_t* me = (raft_server_private_t*)me_;
 
-    if (raft_get_num_snapshottable_logs(me_) == 0)
-        return -1;
+    // if (raft_get_num_snapshottable_logs(me_) == 0)
+    //     return -1;
 
-    int snapshot_target = raft_get_commit_idx(me_);
-    if (!snapshot_target || snapshot_target == 0)
-        return -1;
+    // int snapshot_target = raft_get_commit_idx(me_);
+    // if (!snapshot_target || snapshot_target == 0)
+    //     return -1;
 
-    raft_entry_t* ety = raft_get_entry_from_idx(me_, snapshot_target);
-    if (!ety)
-        return -1;
+    // raft_entry_t* ety = raft_get_entry_from_idx(me_, snapshot_target);
+    // if (!ety)
+    //     return -1;
 
-    /* we need to get all the way to the commit idx */
-    int e = raft_apply_all(me_);
-    if (e != 0)
-        return e;
+    // /* we need to get all the way to the commit idx */
+    // int e = raft_apply_all(me_);
+    // if (e != 0)
+    //     return e;
 
-    assert(raft_get_commit_idx(me_) == raft_get_last_applied_idx(me_));
+    // assert(raft_get_commit_idx(me_) == raft_get_last_applied_idx(me_));
 
-    raft_set_snapshot_metadata(me_, ety->term, snapshot_target);
-    me->snapshot_in_progress = 1;
+    // raft_set_snapshot_metadata(me_, ety->term, snapshot_target);
+    // me->snapshot_in_progress = 1;
 
-    __log(me_, NULL,
-        "begin snapshot sli:%d slt:%d slogs:%d\n", 
-        me->snapshot_last_idx,
-        me->snapshot_last_term,
-        raft_get_num_snapshottable_logs(me_));
+    // __log(me_, NULL,
+    //     "begin snapshot sli:%d slt:%d slogs:%d\n", 
+    //     me->snapshot_last_idx,
+    //     me->snapshot_last_term,
+    //     raft_get_num_snapshottable_logs(me_));
 
     return 0;
 }
 
 int raft_end_snapshot(raft_server_t *me_)
 {
-    raft_server_private_t* me = (raft_server_private_t*)me_;
+    // raft_server_private_t* me = (raft_server_private_t*)me_;
 
-    if (!me->snapshot_in_progress || me->snapshot_last_idx == 0)
-        return -1;
+    // if (!me->snapshot_in_progress || me->snapshot_last_idx == 0)
+    //     return -1;
 
-    /* If needed, remove compacted logs */
-    int i = raft_get_first_entry_idx(me_), end = raft_get_commit_idx(me_);
-    for (; i <= end; i++)
-    {
-        raft_entry_t* _ety;
-        int e = raft_poll_entry(me_, &_ety);
-        if (e != 0)
-            return -1;
-    }
+    // /* If needed, remove compacted logs */
+    // int i = raft_get_first_entry_idx(me_), end = raft_get_commit_idx(me_);
+    // for (; i <= end; i++)
+    // {
+    //     raft_entry_t* _ety;
+    //     int e = raft_poll_entry(me_, &_ety);
+    //     if (e != 0)
+    //         return -1;
+    // }
 
-    me->snapshot_in_progress = 0;
+    // me->snapshot_in_progress = 0;
 
-    if (!raft_is_leader(me_))
-        return 0;
+    // if (!raft_is_leader(me_))
+    //     return 0;
 
-    for (i = 0; i < me->num_nodes; i++)
-    {
-        raft_node_t* node = me->nodes[i];
+    // for (i = 0; i < me->num_nodes; i++)
+    // {
+    //     raft_node_t* node = me->nodes[i];
 
-        if (me->node == node || !raft_node_is_active(node))
-            continue;
+    //     if (me->node == node || !raft_node_is_active(node))
+    //         continue;
 
-        int next_idx = raft_node_get_next_idx(node);
+    //     int next_idx = raft_node_get_next_idx(node);
 
-        /* figure out if the client needs a snapshot sent */
-        if (0 < me->snapshot_last_idx && next_idx < me->snapshot_last_idx)
-        {
-            if (me->cb.send_snapshot)
-                me->cb.send_snapshot(me_, me->udata, node);
-        }
-    }
+    //     /* figure out if the client needs a snapshot sent */
+    //     if (0 < me->snapshot_last_idx && next_idx < me->snapshot_last_idx)
+    //     {
+    //         if (me->cb.send_snapshot)
+    //             me->cb.send_snapshot(me_, me->udata, node);
+    //     }
+    // }
 
     return 0;
 }
@@ -1257,75 +1271,75 @@ int raft_begin_load_snapshot(
     int last_included_term,
     int last_included_index)
 {
-    raft_server_private_t* me = (raft_server_private_t*)me_;
+    // raft_server_private_t* me = (raft_server_private_t*)me_;
 
-    if (last_included_index == -1)
-        return -1;
+    // if (last_included_index == -1)
+    //     return -1;
 
-    if (last_included_index == 0 || last_included_index == 0)
-        return -1;
+    // if (last_included_index == 0 || last_included_index == 0)
+    //     return -1;
 
-    /* loading the snapshot will break cluster safety */
-    if (last_included_index < me->last_applied_idx)
-        return -1;
+    // /* loading the snapshot will break cluster safety */
+    // if (last_included_index < me->last_applied_idx)
+    //     return -1;
 
-    /* snapshot was unnecessary */
-    if (last_included_index < raft_get_current_idx(me_))
-        return -1;
+    // /* snapshot was unnecessary */
+    // if (last_included_index < raft_get_current_idx(me_))
+    //     return -1;
 
-    if (last_included_term == me->snapshot_last_term && last_included_index == me->snapshot_last_idx)
-        return RAFT_ERR_SNAPSHOT_ALREADY_LOADED;
+    // if (last_included_term == me->snapshot_last_term && last_included_index == me->snapshot_last_idx)
+    //     return RAFT_ERR_SNAPSHOT_ALREADY_LOADED;
 
-    me->current_term = last_included_term;
-    me->voted_for = -1;
-    raft_set_state((raft_server_t*)me, RAFT_STATE_FOLLOWER);
-    me->current_leader = NULL;
+    // me->current_term = last_included_term;
+    // me->voted_for = -1;
+    // raft_set_state((raft_server_t*)me, RAFT_STATE_FOLLOWER);
+    // me->current_leader = NULL;
 
-    log_load_from_snapshot(me->log, last_included_index, last_included_term);
+    // log_load_from_snapshot(me->log, last_included_index, last_included_term);
 
-    if (raft_get_commit_idx(me_) < last_included_index)
-        raft_set_commit_idx(me_, last_included_index);
+    // if (raft_get_commit_idx(me_) < last_included_index)
+    //     raft_set_commit_idx(me_, last_included_index);
 
-    me->last_applied_idx = last_included_index;
-    raft_set_snapshot_metadata(me_, last_included_term, me->last_applied_idx);
+    // me->last_applied_idx = last_included_index;
+    // raft_set_snapshot_metadata(me_, last_included_term, me->last_applied_idx);
 
-    /* remove all nodes but self */
-    int i, my_node_by_idx = 0;
-    for (i = 0; i < me->num_nodes; i++)
-    {
-        if (raft_get_nodeid(me_) == raft_node_get_id(me->nodes[i]))
-            my_node_by_idx = i;
-        else
-            raft_node_set_active(me->nodes[i], 0);
-    }
+    // /* remove all nodes but self */
+    // int i, my_node_by_idx = 0;
+    // for (i = 0; i < me->num_nodes; i++)
+    // {
+    //     if (raft_get_nodeid(me_) == raft_node_get_id(me->nodes[i]))
+    //         my_node_by_idx = i;
+    //     else
+    //         raft_node_set_active(me->nodes[i], 0);
+    // }
 
-    /* this will be realloc'd by a raft_add_node */
-    me->nodes[0] = me->nodes[my_node_by_idx];
-    me->num_nodes = 1;
+    // /* this will be realloc'd by a raft_add_node */
+    // me->nodes[0] = me->nodes[my_node_by_idx];
+    // me->num_nodes = 1;
 
-    __log(me_, NULL,
-        "loaded snapshot sli:%d slt:%d slogs:%d\n", 
-        me->snapshot_last_idx,
-        me->snapshot_last_term,
-        raft_get_num_snapshottable_logs(me_));
+    // __log(me_, NULL,
+    //     "loaded snapshot sli:%d slt:%d slogs:%d\n", 
+    //     me->snapshot_last_idx,
+    //     me->snapshot_last_term,
+    //     raft_get_num_snapshottable_logs(me_));
 
     return 0;
 }
 
 int raft_end_load_snapshot(raft_server_t *me_)
 {
-    raft_server_private_t* me = (raft_server_private_t*)me_;
-    int i;
+    // raft_server_private_t* me = (raft_server_private_t*)me_;
+    // int i;
 
-    /* Set nodes' voting status as committed */
-    for (i = 0; i < me->num_nodes; i++)
-    {
-        raft_node_t* node = me->nodes[i];
-        raft_node_set_voting_committed(node, raft_node_is_voting(node));
-        raft_node_set_addition_committed(node, 1);
-        if (raft_node_is_voting(node))
-            raft_node_set_has_sufficient_logs(node);
-    }
+    // /* Set nodes' voting status as committed */
+    // for (i = 0; i < me->num_nodes; i++)
+    // {
+    //     raft_node_t* node = me->nodes[i];
+    //     raft_node_set_voting_committed(node, raft_node_is_voting(node));
+    //     raft_node_set_addition_committed(node, 1);
+    //     if (raft_node_is_voting(node))
+    //         raft_node_set_has_sufficient_logs(node);
+    // }
 
     return 0;
 }
