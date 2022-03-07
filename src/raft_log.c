@@ -128,6 +128,7 @@ int log_append_entry(log_t* me_, raft_entry_t* ety)
 {
     log_private_t* me = (log_private_t*)me_;
     int idx = me->base + me->count + 1;
+    ety->idx = idx;
     int e;
 
     // check if we have space

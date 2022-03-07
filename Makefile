@@ -4,86 +4,32 @@ ifndef TARGET
 TARGET=sky
 endif
 
-CONTRIB_DIR = .
-TEST_DIR = ./tests
-# LLQUEUE_DIR = $(CONTRIB_DIR)/CLinkedListQueue
-
-# GCOV_OUTPUT = *.gcda *.gcno *.gcov 
-# GCOV_CCFLAGS = -fprofile-arcs -ftest-coverage
 SHELL  = /bin/bash
-CFLAGS += -Iinclude -Werror -Werror=return-type -Werror=uninitialized -Wcast-align \
-	  -Wno-pointer-sign -fno-omit-frame-pointer -fno-common -fsigned-char \
-	  -Wunused-variable \
-	  $(GCOV_CCFLAGS) -I$(LLQUEUE_DIR) -Iinclude -g -O2
+CFLAGS += -Iinclude
 
-UNAME := $(shell uname)
+RAFT_SRC =	src/raft_server.c \
+			src/raft_server_properties.c \
+			src/raft_node.c \
+			src/raft_log.c
 
-ifeq ($(UNAME), Darwin)
-SHAREDFLAGS = -dynamiclib
-SHAREDEXT = dylib
-# We need to include the El Capitan specific /usr/includes, aargh
-CFLAGS += -I/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX10.11.sdk/usr/include/
-CFLAGS += -I/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX10.12.sdk/usr/include
-CFLAGS += -fsanitize=address
-else
-SHAREDFLAGS = -shared
-SHAREDEXT = so
-endif
+RAFT_OBJS=$(RAFT_SRC:.c=.o)
 
-OBJECTS = src/raft_server.o src/raft_server_properties.o src/raft_node.o src/raft_log.o
+APP_SRC =	app/main
+TARGET_LIBFILES += -L. -lraft
 
-all: static shared
+all: raft-static raft-app
 
-clinkedlistqueue:
-	mkdir -p $(LLQUEUE_DIR)/.git
-	git --git-dir=$(LLQUEUE_DIR)/.git init 
-	pushd $(LLQUEUE_DIR); git pull http://github.com/willemt/CLinkedListQueue; popd
+.PHONY: raft-static
+raft-static: $(RAFT_OBJS)
+	$(AR) -rcs libraft.a $(RAFT_OBJS)
 
-download-contrib: clinkedlistqueue
+.PHONY: raft-app
+raft-app: raft-static $(APP_SRC)
 
-$(TEST_DIR)/main_test.c:
-	if test -d $(LLQUEUE_DIR); \
-	then echo have contribs; \
-	else make download-contrib; \
-	fi
-	cd $(TEST_DIR) && sh make-tests.sh "test_*.c" > main_test.c && cd ..
-
-.PHONY: shared
-shared: $(OBJECTS)
-	$(CC) $(OBJECTS) $(LDFLAGS) $(CFLAGS) -fPIC $(SHAREDFLAGS) -o libraft.$(SHAREDEXT)
-
-.PHONY: static
-static: $(OBJECTS)
-	ar -r libraft.a $(OBJECTS)
-
-.PHONY: tests
-tests: src/raft_server.c src/raft_server_properties.c src/raft_log.c src/raft_node.c $(TEST_DIR)/main_test.c $(TEST_DIR)/test_server.c $(TEST_DIR)/test_node.c $(TEST_DIR)/test_log.c $(TEST_DIR)/test_snapshotting.c $(TEST_DIR)/test_scenario.c $(TEST_DIR)/mock_send_functions.c $(TEST_DIR)/CuTest.c $(LLQUEUE_DIR)/linked_list_queue.c
-	$(CC) $(CFLAGS) -o tests_main $^
-	./tests_main
-	gcov raft_server.c
-
-.PHONY: fuzzer_tests
-fuzzer_tests:
-	python tests/log_fuzzer.py
-
-.PHONY: amalgamation
-amalgamation:
-	./scripts/amalgamate.sh > raft.h
-
-.PHONY: infer
-infer: do_infer
-
-.PHONY: do_infer
-do_infer:
-	make clean
-	infer -- make static
-
-# clean:
-# 	# @rm -f $(TEST_DIR)/main_test.c *.o $(GCOV_OUTPUT); \
-# 	rm -f src/*.o; \
-# 	if [ -f "libraft.$(SHAREDEXT)" ]; then rm libraft.$(SHAREDEXT); fi;\
-# 	if [ -f libraft.a ]; then rm libraft.a; fi;\
-# 	if [ -f tests_main ]; then rm tests_main; fi;
+clean-raft:
+	rm -f src/*.o; \
+	if [ -f "libraft.so" ]; then rm libraft.so; fi;\
+	if [ -f libraft.a ]; then rm libraft.a; fi;
 
 CONTIKI_WITH_RIME = 1
 include $(CONTIKI)/Makefile.include
