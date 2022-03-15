@@ -27,9 +27,10 @@ raft-static: $(RAFT_OBJS)
 raft-app: raft-static $(APP_SRC)
 
 clean-raft:
-	rm -f src/*.o; \
-	if [ -f "libraft.so" ]; then rm libraft.so; fi;\
+	rm -f src/*.o
+	if [ -f "libraft.so" ]; then rm libraft.so; fi;
 	if [ -f libraft.a ]; then rm libraft.a; fi;
+	$(MAKE) clean
 
 CONTIKI_WITH_RIME = 1
 include $(CONTIKI)/Makefile.include
