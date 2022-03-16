@@ -916,7 +916,7 @@ int raft_send_appendentries_all(raft_server_t* me_)
     return 0;
 }
 
-raft_node_t* raft_add_node(raft_server_t* me_, void* udata, int id, int is_self)
+raft_node_t* raft_add_node(raft_server_t* me_, int id, int is_self)
 {
     raft_server_private_t* me = (raft_server_private_t*)me_;
 
@@ -934,7 +934,7 @@ raft_node_t* raft_add_node(raft_server_t* me_, void* udata, int id, int is_self)
             return NULL;
     }
 
-    node = raft_node_new(udata, id);
+    node = raft_node_new(id);
     if (!node)
         return NULL;
 
@@ -949,12 +949,12 @@ raft_node_t* raft_add_node(raft_server_t* me_, void* udata, int id, int is_self)
     return node;
 }
 
-raft_node_t* raft_add_non_voting_node(raft_server_t* me_, void* udata, int id, int is_self)
+raft_node_t* raft_add_non_voting_node(raft_server_t* me_, int id, int is_self)
 {
     if (raft_get_node(me_, id))
         return NULL;
 
-    raft_node_t* node = raft_add_node(me_, udata, id, is_self);
+    raft_node_t* node = raft_add_node(me_, id, is_self);
     if (!node)
         return NULL;
 
@@ -1083,14 +1083,14 @@ void raft_offer_log(raft_server_t* me_, raft_entry_t* ety, const int idx)
                 }
                 else if (!node)
                 {
-                    raft_node_t* node = raft_add_non_voting_node(me_, NULL, node_id, is_self);
+                    raft_node_t* node = raft_add_non_voting_node(me_, node_id, is_self);
                     assert(node);
                 }
             }
             break;
 
         case RAFT_LOGTYPE_ADD_NODE:
-            node = raft_add_node(me_, NULL, node_id, is_self);
+            node = raft_add_node(me_, node_id, is_self);
             assert(node);
             assert(raft_node_is_voting(node));
             break;
