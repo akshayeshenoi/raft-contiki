@@ -11,7 +11,7 @@
 
 #ifdef APP_DBG
     #define PRINT_FN_DBG() printf("==== Entering %s() ====\n", __func__)
-    #define PRINT_DBG(p) printf("%s: %s", __func__, p)
+    #define PRINT_DBG(p) printf("%s: %s\n", __func__, p)
 #else
     #define PRINT_FN_DBG()
 #endif
@@ -22,11 +22,10 @@ static struct mesh_conn mesh;
 static server_t server;
 static server_t *sv = &server;
 
+static raft_server_t *raft_server;
+
 static unsigned char stage_buffer[PACKETBUF_SIZE];
 
-/*---------------------------------------------------------------------------*/
-PROCESS(main_process, "Main Process");
-AUTOSTART_PROCESSES(&main_process);
 /*---------------------------------------------------------------------------*/
 // networking callbacks
 static void recv(struct mesh_conn *c, const linkaddr_t *from, uint8_t hops)
@@ -197,8 +196,7 @@ void __raft_debug(
     const char *buf
     )
 {
-    // TODO this is not working atm
-    PRINT_DBG(strcat((char *)buf, " -- raft\n"));
+    PRINT_DBG(buf);
 }
 
 raft_cbs_t raft_funcs = {
@@ -214,7 +212,33 @@ raft_cbs_t raft_funcs = {
     .log                         = __raft_debug,
 };
 
+
 /*---------------------------------------------------------------------------*/
+// Contiki Process Declarations
+PROCESS(main_process, "Main Process");
+PROCESS(raft_periodic_process, "Raft Periodic Process");
+AUTOSTART_PROCESSES(&main_process);
+
+/*---------------------------------------------------------------------------*/
+// Raft periodic ticker
+static struct etimer et_periodic;
+PROCESS_THREAD(raft_periodic_process, ev, data)
+{
+  PROCESS_BEGIN();
+
+  while(1) {
+    etimer_set(&et_periodic, CLOCK_SECOND);
+
+    PROCESS_WAIT_EVENT_UNTIL(ev == PROCESS_EVENT_TIMER);
+
+    raft_periodic(raft_server, CLOCK_SECOND);
+  }
+
+  PROCESS_END();
+}
+
+/*---------------------------------------------------------------------------*/
+// Main process
 PROCESS_THREAD(main_process, ev, data)
 {
     PROCESS_EXITHANDLER(mesh_close(&mesh);)
@@ -222,22 +246,32 @@ PROCESS_THREAD(main_process, ev, data)
 
     memset(sv, 0, sizeof(server_t));
 
-    raft_server_t *raft_server = raft_new();
-    // raft_set_callbacks(sv->raft, &raft_funcs, sv);
-    // add self -> raft_add_node(sv->raft, NULL, sv->node_id, 1);
-    // raft_become_leader(sv->raft);
+    raft_server = raft_new();
+    raft_set_callbacks(raft_server, &raft_funcs, NULL);
 
-    // start raft periodic
-    if (raft_server)
-    {
+    // add self
+    raft_add_node(raft_server, node_id, 1);
+
+    // node_id 1 becomes leader 
+    if (node_id == 1) {
+        raft_become_leader(raft_server);
     }
+
+    // add other nodes
+    // TODO this is static for now
+    unsigned short i;
+    for (i = 1; i <= 5; i++)
+    {
+        if (i == node_id)
+            continue; // don't add self
+
+        raft_add_node(raft_server, i, 0);
+    }    
 
     mesh_open(&mesh, 132, &callbacks);
 
-    // if (node_id != 1)
-    // {
-    //     __raft_send_appendentries();
-    // }
+    // start periodic_raft
+    process_start(&raft_periodic_process, NULL);
 
     PROCESS_END();
 }

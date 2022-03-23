@@ -921,7 +921,6 @@ int raft_send_appendentries_all(raft_server_t* me_)
 raft_node_t* raft_add_node(raft_server_t* me_, int id, int is_self)
 {
     raft_server_private_t* me = (raft_server_private_t*)me_;
-    __log(me_, NULL, "adding num_nodes: %d, node_id: %d", me->num_nodes, raft_node_get_id((raft_node_t*)list_head(me->nodes_list)));
 
     /* set to voting if node already exists */
     raft_node_t* node = raft_get_node(me_, id);
@@ -949,7 +948,6 @@ raft_node_t* raft_add_node(raft_server_t* me_, int id, int is_self)
     if (is_self)
         me->node = node;
 
-    __log(me_, NULL, "added num_nodes: %d, node_id: %d", me->num_nodes, raft_node_get_id((raft_node_t*)list_head(me->nodes_list)));
     return node;
 }
 

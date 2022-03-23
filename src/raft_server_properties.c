@@ -193,12 +193,13 @@ raft_node_t* raft_get_node_from_idx(raft_server_t* me_, const int idx)
 
     raft_node_t* node; int i;
     for(node = list_head(me->nodes_list), i = 0;
-        node != NULL, i < me->num_nodes;
+        node != NULL && i < me->num_nodes;
         node = list_item_next(node), i++)
     {
         if (i == idx)
             return node;
     }
+    return NULL;
 }
 
 int raft_get_current_leader(raft_server_t* me_)
