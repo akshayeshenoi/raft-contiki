@@ -48,7 +48,7 @@ typedef struct {
     int timeout_elapsed;
  
     raft_node_t* nodes;
-    list_t* nodes_list;
+    list_t nodes_list;
 
     int num_nodes;
 
