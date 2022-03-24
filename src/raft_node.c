@@ -27,15 +27,18 @@
 #define RAFT_NODE_ADDITION_COMMITTED  (1 << 5)
 #define MAX_NODES                     7
 
-typedef struct
+struct raft_node_private_struct
 {
+    struct raft_node_private_struct *next;
     int next_idx;
     int match_idx;
 
     int flags;
 
     int id;
-} raft_node_private_t;
+};
+
+typedef struct raft_node_private_struct raft_node_private_t;
 
 // managed memory to allocate/deallocate entry members in the list
 MEMB(raft_nodes_mem, raft_node_private_t, MAX_NODES);

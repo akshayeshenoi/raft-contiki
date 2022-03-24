@@ -44,6 +44,7 @@ static void __log(raft_server_t *me_, raft_node_t* node, const char *fmt, ...)
 
     va_start(args, fmt);
     vsprintf(buf, fmt, args);
+    strcat(buf, "\n");
 
     me->cb.log(me_, node, me->udata, buf);
 }
@@ -790,7 +791,7 @@ int raft_apply_entry(raft_server_t* me_)
         return -1;
 
     __log(me_, NULL, "applying log: %d, id: %d size: %d",
-          me->last_applied_idx, ety->id, ety->data.len);
+          me->last_applied_idx, ety->id, sizeof(ety->data));
 
     me->last_applied_idx++;
     if (me->cb.applylog)
@@ -1344,4 +1345,10 @@ int raft_end_load_snapshot(raft_server_t *me_)
     // }
 
     return 0;
+}
+
+raft_entry_t* raft_get_next_log_entry(raft_server_t *me_, raft_entry_t *ety)
+{
+    raft_server_private_t* me = (raft_server_private_t*)me_;
+    return log_get_next_entry(me->log, ety);
 }

@@ -7,15 +7,6 @@
 
 #include "raft.h"
 
-#define APP_DBG
-
-#ifdef APP_DBG
-    #define PRINT_FN_DBG() printf("==== Entering %s() ====\n", __func__)
-    #define PRINT_DBG(p) printf("%s: %s\n", __func__, p)
-#else
-    #define PRINT_FN_DBG()
-#endif
-
 #include "proto.h"
 
 static struct mesh_conn mesh;
@@ -25,6 +16,30 @@ static server_t *sv = &server;
 static raft_server_t *raft_server;
 
 static unsigned char stage_buffer[PACKETBUF_SIZE];
+
+/*---------------------------------------------------------------------------*/
+// logging
+typedef enum {
+    TRACE,
+    DEBUG,
+    INFO,
+    ERR
+} LOG_LEVEL_E;
+
+#define LOG_LEVEL_CONF DEBUG
+
+void __printf(LOG_LEVEL_E log_level, const char *format, ...)
+{   // log_level = info;
+    if (!(log_level >= LOG_LEVEL_CONF)) 
+        return;
+
+    va_list args;
+    va_start (args, format);
+    vprintf (format, args);
+    va_end (args);
+}
+
+#define PRINT_FN_DBG() __printf(TRACE, "\n===== Entering %s() =====\n", __func__);
 
 /*---------------------------------------------------------------------------*/
 // networking callbacks
@@ -37,12 +52,12 @@ static void recv(struct mesh_conn *c, const linkaddr_t *from, uint8_t hops)
 
 static void sent(struct mesh_conn *c)
 {
-    PRINT_DBG("packet ack'd\n");
+    PRINT_FN_DBG()
 }
 
 static void timedout(struct mesh_conn *c)
 {
-    PRINT_DBG("packet timedout\n");
+    PRINT_FN_DBG()
 }
 
 const static struct mesh_callbacks callbacks = {recv, sent, timedout};
@@ -53,7 +68,6 @@ void send_data(void *data, size_t len, linkaddr_t *addr)
     PRINT_FN_DBG();
     packetbuf_copyfrom(data, len);
     mesh_send(&mesh, addr); // non-blocking
-    PRINT_DBG("packet transmitted\n");
 }
 
 /*----------------------------Raft Callbacks---------------------------------*/
@@ -83,7 +97,7 @@ static int __raft_send_requestvote(
     addr.u8[0] = this_node_id & 0xff; // first byte (LSB)
     addr.u8[1] = this_node_id >> 8 & 0xff; // second byte (MSB) 
 
-    send_data(stage_buffer, stage_buffer - offset, &addr);
+    send_data(stage_buffer, offset - stage_buffer, &addr);
 
     return 0;
 }
@@ -97,7 +111,53 @@ static int __raft_send_appendentries(
     )
 {
     PRINT_FN_DBG();
-    return -1;
+    // marshal appendentries message
+    memset(stage_buffer, 0, PACKETBUF_SIZE);
+    unsigned char *offset = stage_buffer;
+    // copy type first (need just one byte)
+    *offset = 0xff & MSG_APPENDENTRIES;
+    offset += 1;
+    // copy message entry message
+    // each message might be comprised of multiple "entries"
+    // 1. start copy just the message metadata first (see struct)
+    memcpy(offset, m, sizeof(msg_appendentries_t));
+    // ignore the last `msg_entry_t *` pointer, since we need to copy actual message there
+    offset += sizeof(msg_appendentries_t) - sizeof(msg_entry_t*);
+
+    // 2. copy entries one by one
+    raft_entry_t *ety = m->entries; 
+    int i = 0;
+    for (i = 0; i < m->n_entries; i++)
+    {
+        // skip the first member of the struct (just a pointer)
+        memcpy(offset, (unsigned char*)ety + sizeof(raft_entry_t*), sizeof(raft_entry_t) - sizeof(raft_entry_t*));
+        offset += sizeof(raft_entry_t) - sizeof(raft_entry_t*);
+
+        ety = raft_get_next_log_entry(raft, ety);
+
+        if (ety == NULL)
+            // reached end, break
+            break;
+
+        // ensure we don't overshoot PACKETBUF_SIZE in the next iteration
+        if ((offset + sizeof(raft_entry_t)) - stage_buffer >= PACKETBUF_SIZE)
+            break; // TODO hopefully no sideeffects
+    }
+
+    unsigned short this_node_id = (unsigned short)raft_node_get_id(node);
+
+    linkaddr_t addr;
+    addr.u8[0] = this_node_id & 0xff; // first byte (LSB)
+    addr.u8[1] = this_node_id >> 8 & 0xff; // second byte (MSB) 
+
+    send_data(stage_buffer, offset - stage_buffer, &addr);
+
+    // debug 
+    __printf(DEBUG, "msg_size: %d, msg: ", (size_t)(offset - stage_buffer));
+    for (i=0; i<offset - stage_buffer; i++) __printf(DEBUG, "%d ", (int)stage_buffer[i]); 
+    __printf(DEBUG, "\n");
+
+    return 0;
 }
 
 /** Raft callback for applying an entry to the finite state machine */
@@ -196,7 +256,7 @@ void __raft_debug(
     const char *buf
     )
 {
-    PRINT_DBG(buf);
+    __printf(DEBUG, buf);
 }
 
 raft_cbs_t raft_funcs = {

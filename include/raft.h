@@ -72,14 +72,16 @@ typedef enum {
 
 typedef struct
 {
-    void *buf;
-
-    unsigned int len;
+    // fixed data
+    unsigned char buf[2];
 } raft_entry_data_t;
 
 /** Entry that is stored in the server's entry log. */
 struct raft_entry_struct
 {
+    // pointer to form linked list
+    struct raft_entry_struct *next;
+
     /** the entry's term at the point it was created */
     unsigned int term;
 
@@ -92,12 +94,8 @@ struct raft_entry_struct
     /** type of entry */
     int type;
 
-    // integrate raft_entry_data_t into this one
-    // start with fixed len data?
     raft_entry_data_t data;
-    // pointer to next element for linked list
-    struct raft_entry_struct *next;
-};
+}; 
 
 typedef struct raft_entry_struct raft_entry_t;
 
@@ -867,5 +865,11 @@ int raft_node_is_voting_committed(raft_node_t* me_);
  * This should be used for creating the membership snapshot.
  **/
 int raft_node_is_addition_committed(raft_node_t* me_);
+
+/**
+ * Get next entry after current entry.
+ * NULL if last
+ */
+raft_entry_t* raft_get_next_log_entry(raft_server_t *me_, raft_entry_t* ety);
 
 #endif /* RAFT_H_ */

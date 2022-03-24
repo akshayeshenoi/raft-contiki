@@ -53,4 +53,10 @@ int log_load_from_snapshot(log_t *me_, int idx, int term);
 
 int log_get_base(log_t* me_);
 
+/*
+ * Get next entry after current entry.
+ * NULL if last
+ */
+raft_entry_t* log_get_next_entry(log_t* me_, raft_entry_t* ety);
+
 #endif /* RAFT_LOG_H_ */
