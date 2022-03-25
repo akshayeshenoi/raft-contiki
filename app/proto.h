@@ -75,39 +75,19 @@ typedef enum
     CONNECTED,
 } conn_status_e;
 
-typedef struct peer_connection_s peer_connection_t;
+typedef enum {
+    CFG_CHANGE
+} fsm_data_e;
 
-// MIGHT NOT NEED THIS
-struct peer_connection_s
-{
-    /* peer's address */
-    linkaddr_t addr;
-
-    /* tell if we need to connect or not */
-    conn_status_e connection_status;
-
-    /* peer's raft node_idx */
-    raft_node_t* node;
-
-    /* number of entries currently expected.
-     * this counts down as we consume entries */
-    int n_expected_entries;
-
-    /* remember most recent append entries msg, we refer to this msg when we
-     * finish reading the log entries.
-     * used in tandem with n_expected_entries */
-    msg_t ae;
-    peer_connection_t *next;
-};
 
 typedef struct
 {
     /* the server's node ID */
     unsigned short node_id;
 
-    raft_server_t* raft;
+    // raft_server_t* raft;
 
     /* Link list of peer connections */
-    peer_connection_t* conns;
+    // peer_connection_t* conns;
 } server_t;
 

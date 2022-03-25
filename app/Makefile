@@ -10,4 +10,4 @@ $(APP_SRC).$(TARGET): libraft.a
 .PHONY: clean-app
 clean-app:
 	rm -f app/*.co
-	rm app/main.sky
+	if [ -f $(APP_SRC).$(TARGET) ]; then rm $(APP_SRC).$(TARGET); fi;

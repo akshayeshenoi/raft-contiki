@@ -86,6 +86,7 @@ int log_load_from_snapshot(log_t *me_, int idx, int term)
 log_t* log_alloc(int initial_size)
 {
     log_private_t* me = &log_private;
+    memset(me, 0, sizeof(*me));
  
     me->size = initial_size;
     list_init(raft_entries_list);
@@ -132,8 +133,9 @@ int log_append_entry(log_t* me_, raft_entry_t* ety)
 
     // check if we have space
     if (list_length(me->entries_list) == MAX_ENTRIES) {
-        // TODO loop back
-        return 0;
+        // remove the youngest one to make space
+        // TODO side effects?
+        list_pop(me->entries_list);
     }
 
     // allocate mem for new entry
@@ -161,7 +163,6 @@ int log_append_entry(log_t* me_, raft_entry_t* ety)
 
     me->count++;
     me->back = new_ety;
-    // TODO make sure original ety is being free'd
     return 0;
 }
 
