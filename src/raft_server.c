@@ -885,13 +885,14 @@ int raft_send_appendentries(raft_server_t* me_, raft_node_t* node)
             ae.prev_log_term = me->snapshot_last_term;
     }
 
-    __log(me_, node, "sending appendentries node: ci:%d comi:%d t:%d lc:%d pli:%d plt:%d",
+    __log(me_, node, "sending appendentries node: ci:%d comi:%d t:%d lc:%d pli:%d plt:%d #%d",
           raft_get_current_idx(me_),
           raft_get_commit_idx(me_),
           ae.term,
           ae.leader_commit,
           ae.prev_log_idx,
-          ae.prev_log_term);
+          ae.prev_log_term,
+          ae.n_entries);
 
     return me->cb.send_appendentries(me_, me->udata, node, &ae);
 }

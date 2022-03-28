@@ -29,7 +29,7 @@ typedef enum {
     ERR
 } LOG_LEVEL_E;
 
-#define LOG_LEVEL_CONF TRACE
+#define LOG_LEVEL_CONF DEBUG
 
 void __printf(LOG_LEVEL_E log_level, const char *format, ...)
 {   // log_level = info;
@@ -45,26 +45,12 @@ void __printf(LOG_LEVEL_E log_level, const char *format, ...)
 #define PRINT_FN_DBG() __printf(TRACE, "\n===== Entering %s() =====\n", __func__);
 
 /*---------------------------------------------------------------------------*/
-// networking callbacks
-static void recv(struct mesh_conn *c, const linkaddr_t *from, uint8_t hops)
+// networking api and callbacks
+void send_data(void *data, size_t len, linkaddr_t *addr)
 {
-    __printf(TRACE, "Data received from %d.%d: size: %d)\n",
-           from->u8[0], from->u8[1], packetbuf_datalen());
-
-    unsigned char *buf_offset = packetbuf_dataptr();
-    int buf_len = packetbuf_datalen();
-
-    // get message type from the first byte
-    peer_message_type_e msgtype = (peer_message_type_e)*buf_offset;
-
-    switch (msgtype) {
-        case MSG_APPENDENTRIES:
-            __printf(DEBUG, "MSG_APPENDENTRIES recveived\n");
-            break;
-        case MSG_REQUESTVOTE:
-            __printf(DEBUG, "MSG_APPENDENTRIES recveived\n");
-            break;
-    }
+    PRINT_FN_DBG();
+    packetbuf_copyfrom(data, len);
+    mesh_send(&mesh, addr); // non-blocking
 }
 
 static void sent(struct mesh_conn *c)
@@ -77,15 +63,108 @@ static void timedout(struct mesh_conn *c)
     PRINT_FN_DBG()
 }
 
-const static struct mesh_callbacks callbacks = {recv, sent, timedout};
+// forward refs
+static void __handle_msg_appendentries(unsigned char* buf_offset, int buf_len, unsigned short recv_nodeid);
+static void __handle_msg_appendentries_response(unsigned char* buf_offset, int buf_len, unsigned short recv_nodeid);
+static void __handle_msg_requestvote(unsigned char* buf_offset, int buf_len, unsigned short recv_nodeid);
 
-void send_data(void *data, size_t len, linkaddr_t *addr)
+static void recv(struct mesh_conn *c, const linkaddr_t *from, uint8_t hops)
 {
-    PRINT_FN_DBG();
-    packetbuf_copyfrom(data, len);
-    mesh_send(&mesh, addr); // non-blocking
+    __printf(TRACE, "Data received from %d.%d: size: %d\n",
+           from->u8[0], from->u8[1], packetbuf_datalen());
+
+    unsigned char *buf_offset = packetbuf_dataptr();
+    int buf_len = packetbuf_datalen();
+    unsigned short recv_nodeid = (from->u8[0] & 0xff) + (from->u8[1] >> 8 & 0xff);
+
+    // get message type from the first byte
+    peer_message_type_e msgtype = (peer_message_type_e)*buf_offset;
+
+    switch (msgtype) {
+        case MSG_APPENDENTRIES:
+            __printf(DEBUG, "MSG_APPENDENTRIES recveived\n");
+            __handle_msg_appendentries(buf_offset, buf_len, recv_nodeid);
+            break;
+        case MSG_APPENDENTRIES_RESPONSE:
+            __printf(DEBUG, "MSG_APPENDENTRIES_RESPONSE recveived\n");
+            __handle_msg_appendentries_response(buf_offset, buf_len, recv_nodeid);
+            break;
+        case MSG_REQUESTVOTE:
+            __printf(DEBUG, "MSG_APPENDENTRIES recveived\n");
+            break;
+    }
 }
 
+const static struct mesh_callbacks callbacks = {recv, sent, timedout};
+
+/*---------------------------------------------------------------------------*/
+// raft message handlers
+
+static void __handle_msg_appendentries(unsigned char* buf_offset, int buf_len, unsigned short recv_nodeid)
+{
+    PRINT_FN_DBG();
+    raft_node_t* node = raft_get_node(raft_server, recv_nodeid);
+    // skip type byte first
+    buf_offset += 1;
+
+    msg_appendentries_t msg_ae = {};
+    msg_appendentries_t* msg_offset = &msg_ae;
+    // each message might be comprised of multiple "entries"
+    // 1. copy just the message metadata first (see struct)
+    memcpy(msg_offset, buf_offset, sizeof(msg_appendentries_t) - sizeof(msg_entry_t*));
+    msg_offset += sizeof(msg_appendentries_t) - sizeof(msg_entry_t*);
+    buf_offset += sizeof(msg_appendentries_t) - sizeof(msg_entry_t*);
+
+    // 2. copy entries one by one
+    // allocate a temporary buffer on the stack to save entries
+    unsigned char msg_ae_entries[PACKETBUF_SIZE];
+    // point it to msg.entries
+    msg_ae.entries = (void*)msg_ae_entries;
+
+    int i = 0;
+    for (i = 0; i < msg_ae.n_entries; i++)
+    {
+        memcpy(&msg_ae.entries[i], buf_offset, sizeof(raft_entry_t));
+        buf_offset += sizeof(raft_entry_t);
+    }
+
+    msg_t msg_response = {};
+    msg_response.type = MSG_APPENDENTRIES_RESPONSE;
+
+    int e = raft_recv_appendentries(raft_server, node, &msg_ae, &msg_response.aer);
+    assert(e == 0);
+
+    // send response
+    // marshal appendentries response message
+    memset(stage_buffer, 0, PACKETBUF_SIZE);
+    unsigned char *offset = stage_buffer;
+    // copy type first (need just one byte)
+    *offset = 0xff & MSG_APPENDENTRIES_RESPONSE;
+    offset += 1;
+
+    memcpy(offset, &msg_response.aer, sizeof(msg_appendentries_response_t));
+    offset += sizeof(msg_appendentries_response_t);
+
+    linkaddr_t addr;
+    addr.u8[0] = recv_nodeid & 0xff; // first byte (LSB)
+    addr.u8[1] = recv_nodeid >> 8 & 0xff; // second byte (MSB) 
+
+    send_data(stage_buffer, offset - stage_buffer, &addr);
+}
+
+static void __handle_msg_appendentries_response(unsigned char* buf_offset, int buf_len, unsigned short recv_nodeid)
+{
+    PRINT_FN_DBG();
+    raft_node_t* node = raft_get_node(raft_server, recv_nodeid);
+    // skip type byte first
+    buf_offset += 1;
+
+    msg_appendentries_response_t msg_aer = {};
+    memcpy(&msg_aer, buf_offset, sizeof(msg_appendentries_response_t));
+
+    int e = raft_recv_appendentries_response(raft_server, node, &msg_aer);
+    assert(e == 0);
+}
 /*---------------------------------------------------------------------------*/
 // raft callbacks
 
@@ -136,7 +215,7 @@ static int __raft_send_appendentries(
     offset += 1;
     // copy message entry message
     // each message might be comprised of multiple "entries"
-    // 1. start copy just the message metadata first (see struct)
+    // 1. copy just the message metadata first (see struct)
     memcpy(offset, m, sizeof(msg_appendentries_t));
     // ignore the last `msg_entry_t *` pointer, since we need to copy actual message there
     offset += sizeof(msg_appendentries_t) - sizeof(msg_entry_t*);
@@ -146,9 +225,12 @@ static int __raft_send_appendentries(
     int i = 0;
     for (i = 0; i < m->n_entries; i++)
     {
-        // skip the first member of the struct (just a pointer)
-        memcpy(offset, (unsigned char*)ety + sizeof(raft_entry_t*), sizeof(raft_entry_t) - sizeof(raft_entry_t*));
-        offset += sizeof(raft_entry_t) - sizeof(raft_entry_t*);
+        memcpy(offset, ety, sizeof(raft_entry_t));
+        // note that the first member of raft_entry_t is a pointer to the next element
+        // just overwrite to 0
+        memset(offset, 0, sizeof(raft_entry_t*));
+
+        offset += sizeof(raft_entry_t);
 
         ety = raft_get_next_log_entry(raft, ety);
 
