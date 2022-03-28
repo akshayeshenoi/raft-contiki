@@ -48,9 +48,23 @@ void __printf(LOG_LEVEL_E log_level, const char *format, ...)
 // networking callbacks
 static void recv(struct mesh_conn *c, const linkaddr_t *from, uint8_t hops)
 {
-    printf("Data received from %d.%d: %.*s (%d)\n",
-           from->u8[0], from->u8[1],
-           packetbuf_datalen(), (char *)packetbuf_dataptr(), packetbuf_datalen());
+    __printf(TRACE, "Data received from %d.%d: size: %d)\n",
+           from->u8[0], from->u8[1], packetbuf_datalen());
+
+    unsigned char *buf_offset = packetbuf_dataptr();
+    int buf_len = packetbuf_datalen();
+
+    // get message type from the first byte
+    peer_message_type_e msgtype = (peer_message_type_e)*buf_offset;
+
+    switch (msgtype) {
+        case MSG_APPENDENTRIES:
+            __printf(DEBUG, "MSG_APPENDENTRIES recveived\n");
+            break;
+        case MSG_REQUESTVOTE:
+            __printf(DEBUG, "MSG_APPENDENTRIES recveived\n");
+            break;
+    }
 }
 
 static void sent(struct mesh_conn *c)
@@ -71,76 +85,6 @@ void send_data(void *data, size_t len, linkaddr_t *addr)
     packetbuf_copyfrom(data, len);
     mesh_send(&mesh, addr); // non-blocking
 }
-
-/*---------------------------------------------------------------------------*/
-// helper functions
-
-/** Adds node membership related log entries */
-static int __append_cfg_change(
-    raft_server_t * raft_server,
-    raft_logtype_e changetype, 
-    unsigned short nodeid
-    )
-{
-    PRINT_FN_DBG();
-
-    msg_entry_t entry;
-    entry.id = random_rand();
-    entry.data.buf[0] = nodeid & 0xff; // first byte (LSB)
-    entry.data.buf[1] = nodeid >> 8 & 0xff; // second byte (MSB) 
-    entry.type = changetype;
-
-    msg_entry_response_t r;
-    int e = raft_recv_entry(raft_server, &entry, &r);
-    return e;
-}
-
-/** Make membership related changes */
-static int __offer_cfg_change(
-    raft_server_t * raft_server,
-    raft_logtype_e changetype, 
-    unsigned short nodeid
-    )
-{
-    PRINT_FN_DBG();
-    // entry_cfg_change_t *change = (void*)data;
-    // peer_connection_t* conn = __find_connection(sv, change->host, change->raft_port);
-
-    /* Node is being removed */
-    if (changetype == RAFT_LOGTYPE_REMOVE_NODE)
-    {
-        raft_remove_node(raft_server, raft_get_node(raft_server, node_id));
-        // if (conn)
-        //     conn->node = NULL;
-        /* __delete_connection(sv, conn); */
-        return 0;
-    }
-
-    /* Node is being added */
-    // if (!conn)
-    // {
-    //     conn = __new_connection(sv);
-    // }
-
-    int is_self = nodeid == sv->node_id;
-
-    switch (changetype)
-    {
-        case RAFT_LOGTYPE_ADD_NONVOTING_NODE:
-            raft_add_non_voting_node(raft_server, node_id, is_self);
-            break;
-        case RAFT_LOGTYPE_ADD_NODE:
-            raft_add_node(raft_server, node_id, is_self);
-            break;
-        default:
-            assert(0);
-    }
-
-    // raft_node_set_udata(conn->node, conn);
-
-    return 0;
-}
-
 
 /*---------------------------------------------------------------------------*/
 // raft callbacks
@@ -282,14 +226,6 @@ static int __raft_logentry_offer(
 {
     PRINT_FN_DBG();
     // no flash storage to add log to
-    // just manage config change (if any)
-    if (raft_entry_is_cfg_change(ety))
-    {
-        // derive nodeid
-        unsigned short nodeid = (ety->data.buf[0] & 0xff) + (ety->data.buf[1] >> 8 & 0xff);
-        __offer_cfg_change(raft, ety->type, nodeid);
-    }
-
     return 0;
 }
 
@@ -316,6 +252,19 @@ static int __raft_logentry_pop(
 {
     PRINT_FN_DBG();
     return -1;
+}
+
+/** Raft callback for getting node_id from config change ety */
+static int __raft_log_get_node_id(
+    raft_server_t* raft,
+    void *user_data,
+    raft_entry_t *entry,
+    int entry_idx
+    )
+{
+    // we know that ety is config change related entry for sure
+    // node id is in the buffer itself
+    return (entry->data.buf[0] & 0xff) + (entry->data.buf[1] >> 8 & 0xff);
 }
 
 /** Non-voting node now has enough logs to be able to vote.
@@ -350,6 +299,7 @@ raft_cbs_t raft_funcs = {
     .log_offer                   = __raft_logentry_offer,
     .log_poll                    = __raft_logentry_poll,
     .log_pop                     = __raft_logentry_pop,
+    .log_get_node_id             = __raft_log_get_node_id,
     .node_has_sufficient_logs    = __raft_node_has_sufficient_logs,
     .log                         = __raft_debug,
 };
@@ -400,11 +350,6 @@ PROCESS_THREAD(main_process, ev, data)
     // node_id 1 becomes leader 
     if (sv->node_id == 1) {
         raft_become_leader(raft_server);
-        /* We store membership configuration inside the Raft log.
-            * This configuration change is going to be the initial membership
-            * configuration (ie. original node) inside the Raft log. The
-            * first configuration is for a cluster of 1 node. */
-        __append_cfg_change(raft_server, RAFT_LOGTYPE_ADD_NODE, sv->node_id);
     }
 
     // add other nodes
