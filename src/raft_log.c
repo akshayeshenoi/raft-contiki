@@ -114,7 +114,8 @@ void log_clear(log_t* me_)
     log_private_t* me = (log_private_t*)me_;
     // loop through the list and delete all entries
     while(list_length(me->entries_list) != 0) {
-        list_pop(me->entries_list);
+        raft_entry_t *ety = list_pop(me->entries_list);
+        memb_free(&raft_entries_mem, ety);
     }
 
     me->count = 0;
@@ -135,7 +136,8 @@ int log_append_entry(log_t* me_, raft_entry_t* ety)
     if (list_length(me->entries_list) == MAX_ENTRIES) {
         // remove the youngest one to make space
         // TODO side effects?
-        list_pop(me->entries_list);
+        raft_entry_t *ety = list_pop(me->entries_list);
+        memb_free(&raft_entries_mem, ety);
     }
 
     // allocate mem for new entry
@@ -241,7 +243,8 @@ int log_delete(log_t* me_, int idx)
     if (idx < me->base)
         idx = me->base;
 
-    raft_entry_t *ety;
+    raft_entry_t *ety; 
+    raft_entry_t *ety_to_remove = NULL;
     for(ety = list_head(me->entries_list);
         ety != NULL;
         ety = list_item_next(ety))
@@ -254,8 +257,16 @@ int log_delete(log_t* me_, int idx)
                 return e;
 
             raft_pop_log(me->raft, ety, idx);
+            ety_to_remove = ety;
             me->count--;
+            break;
         }
+    }
+
+    if(ety_to_remove)
+    {
+        list_remove(me->entries_list, ety_to_remove);
+        memb_free(&raft_entries_mem, ety_to_remove);
     }
 
     return 0;
