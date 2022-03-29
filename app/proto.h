@@ -1,3 +1,6 @@
+#ifndef PROTO_H_
+#define PROTO_H_
+
 #include "raft.h"
 #include "contiki.h"
 #include "net/rime/rime.h"
@@ -27,6 +30,39 @@ typedef enum
     MSG_APPENDENTRIES,
     MSG_APPENDENTRIES_RESPONSE,
 } peer_message_type_e;
+
+const char * get_peer_message_type(peer_message_type_e pmte)
+{
+    switch (pmte)
+    {
+    case MSG_HANDSHAKE:
+        return "MSG_HANDSHAKE";
+        break;
+    case MSG_HANDSHAKE_RESPONSE:
+        return "MSG_HANDSHAKE_RESPONSE";
+        break;
+    case MSG_LEAVE:
+        return "MSG_LEAVE";
+        break;
+    case MSG_LEAVE_RESPONSE:
+        return "MSG_LEAVE_RESPONSE";
+        break;
+    case MSG_REQUESTVOTE:
+        return "MSG_REQUESTVOTE";
+        break;
+    case MSG_REQUESTVOTE_RESPONSE:
+        return "MSG_REQUESTVOTE_RESPONSE";
+        break;
+    case MSG_APPENDENTRIES:
+        return "MSG_APPENDENTRIES";
+        break;
+    case MSG_APPENDENTRIES_RESPONSE:
+        return "MSG_APPENDENTRIES_RESPONSE";
+        break;
+    default:
+        return "UNKNOWN";
+    }
+}
 
 /** Peer protocol handshake
  * Send handshake after connecting so that our peer can identify us 
@@ -91,3 +127,4 @@ typedef struct
     // peer_connection_t* conns;
 } server_t;
 
+#endif /* PROTO_H_ */

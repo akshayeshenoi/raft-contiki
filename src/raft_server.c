@@ -22,6 +22,7 @@
 
 #include "contiki.h"
 #include "lib/list.h"
+#include "lib/random.h"
 
 #ifndef min
 #define min(a, b) ((a) < (b) ? (a) : (b))
@@ -54,7 +55,7 @@ void raft_randomize_election_timeout(raft_server_t* me_)
     raft_server_private_t* me = (raft_server_private_t*)me_;
 
     /* [election_timeout, 2 * election_timeout) */
-    me->election_timeout_rand = me->election_timeout + rand() % me->election_timeout;
+    me->election_timeout_rand = me->election_timeout + random_rand() % me->election_timeout;
     __log(me_, NULL, "randomize election timeout to %d", me->election_timeout_rand);
 }
 
@@ -752,7 +753,7 @@ int raft_send_requestvote(raft_server_t* me_, raft_node_t* node)
     assert(node);
     assert(node != me->node);
 
-    __log(me_, node, "sending requestvote to: %d", node);
+    __log(me_, node, "sending requestvote to: %d", raft_node_get_id(node));
 
     rv.term = me->current_term;
     rv.last_log_idx = raft_get_current_idx(me_);
@@ -885,7 +886,8 @@ int raft_send_appendentries(raft_server_t* me_, raft_node_t* node)
             ae.prev_log_term = me->snapshot_last_term;
     }
 
-    __log(me_, node, "sending appendentries node: ci:%d comi:%d t:%d lc:%d pli:%d plt:%d #%d",
+    __log(me_, node, "sending appendentries node:%d ci:%d comi:%d t:%d lc:%d pli:%d plt:%d #%d",
+          raft_node_get_id(node),
           raft_get_current_idx(me_),
           raft_get_commit_idx(me_),
           ae.term,

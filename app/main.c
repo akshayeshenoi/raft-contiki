@@ -67,6 +67,7 @@ static void timedout(struct mesh_conn *c)
 static void __handle_msg_appendentries(unsigned char* buf_offset, int buf_len, unsigned short recv_nodeid);
 static void __handle_msg_appendentries_response(unsigned char* buf_offset, int buf_len, unsigned short recv_nodeid);
 static void __handle_msg_requestvote(unsigned char* buf_offset, int buf_len, unsigned short recv_nodeid);
+static void __handle_msg_requestvote_response(unsigned char* buf_offset, int buf_len, unsigned short recv_nodeid);
 
 static void recv(struct mesh_conn *c, const linkaddr_t *from, uint8_t hops)
 {
@@ -81,16 +82,29 @@ static void recv(struct mesh_conn *c, const linkaddr_t *from, uint8_t hops)
     peer_message_type_e msgtype = (peer_message_type_e)*buf_offset;
 
     switch (msgtype) {
+        case MSG_HANDSHAKE:
+            break;
+        case MSG_HANDSHAKE_RESPONSE:
+            break;
         case MSG_APPENDENTRIES:
-            __printf(DEBUG, "MSG_APPENDENTRIES recveived\n");
+            __printf(DEBUG, "MSG_APPENDENTRIES received from %d\n", recv_nodeid);
             __handle_msg_appendentries(buf_offset, buf_len, recv_nodeid);
             break;
         case MSG_APPENDENTRIES_RESPONSE:
-            __printf(DEBUG, "MSG_APPENDENTRIES_RESPONSE recveived\n");
+            __printf(DEBUG, "MSG_APPENDENTRIES_RESPONSE received from %d\n", recv_nodeid);
             __handle_msg_appendentries_response(buf_offset, buf_len, recv_nodeid);
             break;
         case MSG_REQUESTVOTE:
-            __printf(DEBUG, "MSG_APPENDENTRIES recveived\n");
+            __printf(DEBUG, "MSG_REQUESTVOTE received from %d\n", recv_nodeid);
+            __handle_msg_requestvote(buf_offset, buf_len, recv_nodeid);
+            break;
+        case MSG_REQUESTVOTE_RESPONSE:
+            __printf(DEBUG, "MSG_REQUESTVOTE received from %d\n", recv_nodeid);
+            __handle_msg_requestvote_response(buf_offset, buf_len, recv_nodeid);
+            break;
+        case MSG_LEAVE:
+            break;
+        case MSG_LEAVE_RESPONSE:
             break;
     }
 }
@@ -108,11 +122,9 @@ static void __handle_msg_appendentries(unsigned char* buf_offset, int buf_len, u
     buf_offset += 1;
 
     msg_appendentries_t msg_ae = {};
-    msg_appendentries_t* msg_offset = &msg_ae;
     // each message might be comprised of multiple "entries"
     // 1. copy just the message metadata first (see struct)
-    memcpy(msg_offset, buf_offset, sizeof(msg_appendentries_t) - sizeof(msg_entry_t*));
-    msg_offset += sizeof(msg_appendentries_t) - sizeof(msg_entry_t*);
+    memcpy(&msg_ae, buf_offset, sizeof(msg_appendentries_t) - sizeof(msg_entry_t*));
     buf_offset += sizeof(msg_appendentries_t) - sizeof(msg_entry_t*);
 
     // 2. copy entries one by one
@@ -163,6 +175,55 @@ static void __handle_msg_appendentries_response(unsigned char* buf_offset, int b
     memcpy(&msg_aer, buf_offset, sizeof(msg_appendentries_response_t));
 
     int e = raft_recv_appendentries_response(raft_server, node, &msg_aer);
+    assert(e == 0);
+}
+
+static void __handle_msg_requestvote(unsigned char* buf_offset, int buf_len, unsigned short recv_nodeid)
+{
+    PRINT_FN_DBG();
+    raft_node_t* node = raft_get_node(raft_server, recv_nodeid);
+    // skip type byte first
+    buf_offset += 1;
+
+    // deserialize
+    msg_requestvote_t msg_rv = {};
+    memcpy(&msg_rv, buf_offset, sizeof(msg_requestvote_t));
+
+    msg_t msg_response = {};
+    msg_response.type = MSG_REQUESTVOTE_RESPONSE;
+
+    int e = raft_recv_requestvote(raft_server, node, &msg_rv, &msg_response.rvr);
+    assert(e == 0);
+
+    // send response
+    // marshal requestvote response message
+    memset(stage_buffer, 0, PACKETBUF_SIZE);
+    unsigned char *offset = stage_buffer;
+    // copy type first (need just one byte)
+    *offset = 0xff & MSG_REQUESTVOTE_RESPONSE;
+    offset += 1;
+
+    memcpy(offset, &msg_response.rvr, sizeof(msg_requestvote_response_t));
+    offset += sizeof(msg_requestvote_response_t);
+
+    linkaddr_t addr;
+    addr.u8[0] = recv_nodeid & 0xff; // first byte (LSB)
+    addr.u8[1] = recv_nodeid >> 8 & 0xff; // second byte (MSB) 
+
+    send_data(stage_buffer, offset - stage_buffer, &addr);
+}
+
+static void __handle_msg_requestvote_response(unsigned char* buf_offset, int buf_len, unsigned short recv_nodeid)
+{
+    PRINT_FN_DBG();
+    raft_node_t* node = raft_get_node(raft_server, recv_nodeid);
+    // skip type byte first
+    buf_offset += 1;
+
+    msg_requestvote_response_t msg_rvr = {};
+    memcpy(&msg_rvr, buf_offset, sizeof(msg_requestvote_response_t));
+
+    int e = raft_recv_requestvote_response(raft_server, node, &msg_rvr);
     assert(e == 0);
 }
 /*---------------------------------------------------------------------------*/
@@ -251,11 +312,6 @@ static int __raft_send_appendentries(
 
     send_data(stage_buffer, offset - stage_buffer, &addr);
 
-    // debug 
-    __printf(DEBUG, "msg_size: %d, msg: ", (size_t)(offset - stage_buffer));
-    for (i=0; i<offset - stage_buffer; i++) __printf(DEBUG, "%d ", (int)stage_buffer[i]); 
-    __printf(DEBUG, "\n");
-
     return 0;
 }
 
@@ -281,7 +337,7 @@ static int __raft_persist_vote(
     )
 {
     PRINT_FN_DBG();
-    return -1;
+    return 0;
 }
 
 /** Raft callback for saving term field to disk.
@@ -295,7 +351,7 @@ static int __raft_persist_term(
     )
 {
     PRINT_FN_DBG();
-    return -1;
+    return 0;
 }
 
 /** Raft callback for appending an item to the log */
@@ -405,7 +461,7 @@ PROCESS_THREAD(raft_periodic_process, ev, data)
 
     PROCESS_WAIT_EVENT_UNTIL(ev == PROCESS_EVENT_TIMER);
 
-    raft_periodic(raft_server, CLOCK_SECOND);
+    raft_periodic(raft_server, CLOCK_SECOND / 4); // 250ms
   }
 
   PROCESS_END();
@@ -424,6 +480,9 @@ PROCESS_THREAD(main_process, ev, data)
     random_init(node_id);
 
     raft_server = raft_new();
+    raft_set_election_timeout(raft_server, CLOCK_CONF_SECOND * 5);
+    raft_set_request_timeout(raft_server, CLOCK_CONF_SECOND * 2.5);
+
     raft_set_callbacks(raft_server, &raft_funcs, NULL);
 
     // add self
