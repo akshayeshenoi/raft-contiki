@@ -29,7 +29,14 @@ typedef enum
     MSG_REQUESTVOTE_RESPONSE,
     MSG_APPENDENTRIES,
     MSG_APPENDENTRIES_RESPONSE,
+    MSG_CLIENT,
+    MSG_CLIENT_RESPONSE
 } peer_message_type_e;
+
+typedef struct {
+    // client message 
+    unsigned char buf[2];
+} client_message_t;
 
 const char * get_peer_message_type(peer_message_type_e pmte)
 {

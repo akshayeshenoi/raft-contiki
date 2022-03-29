@@ -12,13 +12,17 @@
 
 #include "proto.h"
 
-static struct mesh_conn mesh;
+static struct netflood_conn netflood;
+static int netflood_seq = 0;
 static server_t server;
 static server_t *sv = &server;
 
 static raft_server_t *raft_server;
 
 static unsigned char stage_buffer[PACKETBUF_SIZE];
+
+#define HEADER_SIZE 4 // only receiver ID for now
+#define PAYLOAD_SIZE (PACKETBUF_SIZE - HEADER_SIZE)
 
 /*---------------------------------------------------------------------------*/
 // logging
@@ -46,19 +50,25 @@ void __printf(LOG_LEVEL_E log_level, const char *format, ...)
 
 /*---------------------------------------------------------------------------*/
 // networking api and callbacks
-void send_data(void *data, size_t len, linkaddr_t *addr)
+void send_data(void *data, size_t len, unsigned short nodeid)
 {
     PRINT_FN_DBG();
+
+    // make space for receiver node ID
+    memmove(((unsigned char*)data) + sizeof(unsigned short), data, len);
+    memcpy(data, &nodeid, sizeof(unsigned short));
+    len += sizeof(unsigned short);
+
     packetbuf_copyfrom(data, len);
-    mesh_send(&mesh, addr); // non-blocking
+    netflood_send(&netflood, netflood_seq++);
 }
 
-static void sent(struct mesh_conn *c)
+static void sent(struct netflood_conn *c)
 {
     PRINT_FN_DBG()
 }
 
-static void timedout(struct mesh_conn *c)
+static void timedout(struct netflood_conn *c)
 {
     PRINT_FN_DBG()
 }
@@ -68,23 +78,36 @@ static void __handle_msg_appendentries(unsigned char* buf_offset, int buf_len, u
 static void __handle_msg_appendentries_response(unsigned char* buf_offset, int buf_len, unsigned short recv_nodeid);
 static void __handle_msg_requestvote(unsigned char* buf_offset, int buf_len, unsigned short recv_nodeid);
 static void __handle_msg_requestvote_response(unsigned char* buf_offset, int buf_len, unsigned short recv_nodeid);
+static void __handle_msg_client(unsigned char* buf_offset, int buf_len, unsigned short recv_nodeid);
+static void __handle_msg_client_response(unsigned char* buf_offset, int buf_len, unsigned short recv_nodeid);
 
-static void recv(struct mesh_conn *c, const linkaddr_t *from, uint8_t hops)
+static int recv(struct netflood_conn *c, const linkaddr_t *from,
+	       const linkaddr_t *originator, uint8_t seqno, uint8_t hops)
 {
     __printf(TRACE, "Data received from %d.%d: size: %d\n",
-           from->u8[0], from->u8[1], packetbuf_datalen());
+           originator->u8[0], originator->u8[1], packetbuf_datalen());
 
     unsigned char *buf_offset = packetbuf_dataptr();
     int buf_len = packetbuf_datalen();
-    unsigned short recv_nodeid = (from->u8[0] & 0xff) + (from->u8[1] >> 8 & 0xff);
+
+    // ensure it's addressed to us
+    unsigned short intended_recvr; 
+    memcpy(&intended_recvr, buf_offset, sizeof(unsigned short));
+    if (sv->node_id != intended_recvr) return 1;
+
+    buf_offset += sizeof(unsigned short);
+
+    unsigned short recv_nodeid = (originator->u8[0] & 0xff) + (originator->u8[1] >> 8 & 0xff);
 
     // get message type from the first byte
     peer_message_type_e msgtype = (peer_message_type_e)*buf_offset;
 
     switch (msgtype) {
         case MSG_HANDSHAKE:
+            // TODO dynamic later
             break;
         case MSG_HANDSHAKE_RESPONSE:
+            // TODO dynamic later
             break;
         case MSG_APPENDENTRIES:
             __printf(DEBUG, "MSG_APPENDENTRIES received from %d\n", recv_nodeid);
@@ -99,17 +122,29 @@ static void recv(struct mesh_conn *c, const linkaddr_t *from, uint8_t hops)
             __handle_msg_requestvote(buf_offset, buf_len, recv_nodeid);
             break;
         case MSG_REQUESTVOTE_RESPONSE:
-            __printf(DEBUG, "MSG_REQUESTVOTE received from %d\n", recv_nodeid);
+            __printf(DEBUG, "MSG_REQUESTVOTE_RESPONSE received from %d\n", recv_nodeid);
             __handle_msg_requestvote_response(buf_offset, buf_len, recv_nodeid);
             break;
         case MSG_LEAVE:
             break;
         case MSG_LEAVE_RESPONSE:
             break;
+        case MSG_CLIENT:
+            __printf(DEBUG, "MSG_CLIENT received from %d\n", recv_nodeid);
+            __handle_msg_client(buf_offset, buf_len, recv_nodeid);
+            break;
+        case MSG_CLIENT_RESPONSE:
+            __printf(DEBUG, "MSG_CLIENT_RESPONSE received from %d\n", recv_nodeid);
+            __handle_msg_client_response(buf_offset, buf_len, recv_nodeid);
+            break;
     }
+    return 1;
 }
 
-const static struct mesh_callbacks callbacks = {recv, sent, timedout};
+const static struct netflood_callbacks callbacks = {
+    recv, 
+    sent, 
+    timedout};
 
 /*---------------------------------------------------------------------------*/
 // raft message handlers
@@ -129,7 +164,7 @@ static void __handle_msg_appendentries(unsigned char* buf_offset, int buf_len, u
 
     // 2. copy entries one by one
     // allocate a temporary buffer on the stack to save entries
-    unsigned char msg_ae_entries[PACKETBUF_SIZE];
+    unsigned char msg_ae_entries[PAYLOAD_SIZE];
     // point it to msg.entries
     msg_ae.entries = (void*)msg_ae_entries;
 
@@ -155,13 +190,9 @@ static void __handle_msg_appendentries(unsigned char* buf_offset, int buf_len, u
     offset += 1;
 
     memcpy(offset, &msg_response.aer, sizeof(msg_appendentries_response_t));
-    offset += sizeof(msg_appendentries_response_t);
+    offset += sizeof(msg_appendentries_response_t); 
 
-    linkaddr_t addr;
-    addr.u8[0] = recv_nodeid & 0xff; // first byte (LSB)
-    addr.u8[1] = recv_nodeid >> 8 & 0xff; // second byte (MSB) 
-
-    send_data(stage_buffer, offset - stage_buffer, &addr);
+    send_data(stage_buffer, offset - stage_buffer, recv_nodeid);
 }
 
 static void __handle_msg_appendentries_response(unsigned char* buf_offset, int buf_len, unsigned short recv_nodeid)
@@ -204,13 +235,9 @@ static void __handle_msg_requestvote(unsigned char* buf_offset, int buf_len, uns
     offset += 1;
 
     memcpy(offset, &msg_response.rvr, sizeof(msg_requestvote_response_t));
-    offset += sizeof(msg_requestvote_response_t);
+    offset += sizeof(msg_requestvote_response_t); 
 
-    linkaddr_t addr;
-    addr.u8[0] = recv_nodeid & 0xff; // first byte (LSB)
-    addr.u8[1] = recv_nodeid >> 8 & 0xff; // second byte (MSB) 
-
-    send_data(stage_buffer, offset - stage_buffer, &addr);
+    send_data(stage_buffer, offset - stage_buffer, recv_nodeid);
 }
 
 static void __handle_msg_requestvote_response(unsigned char* buf_offset, int buf_len, unsigned short recv_nodeid)
@@ -226,6 +253,34 @@ static void __handle_msg_requestvote_response(unsigned char* buf_offset, int buf
     int e = raft_recv_requestvote_response(raft_server, node, &msg_rvr);
     assert(e == 0);
 }
+
+static void __handle_msg_client(unsigned char* buf_offset, int buf_len, unsigned short recv_nodeid)
+{
+    PRINT_FN_DBG();
+    // raft_node_t* node = raft_get_node(raft_server, recv_nodeid);
+    // skip type byte first
+    buf_offset += 1;
+
+    // copy message into entry struct
+    msg_entry_t entry = {};
+    entry.id = random_rand();
+    memcpy(entry.data.buf, buf_offset, sizeof(client_message_t));
+
+    // submit to raft library
+    msg_entry_response_t entry_response = {};
+    raft_recv_entry(raft_server, &entry, &entry_response);
+
+    // aynchronously respond to client
+    // add to some global queue perhaps, and check for success after each
+    // raft_periodic
+
+}
+
+static void __handle_msg_client_response(unsigned char* buf_offset, int buf_len, unsigned short recv_nodeid)
+{
+
+}
+
 /*---------------------------------------------------------------------------*/
 // raft callbacks
 
@@ -250,11 +305,7 @@ static int __raft_send_requestvote(
 
     unsigned short this_node_id = (unsigned short)raft_node_get_id(node);
 
-    linkaddr_t addr;
-    addr.u8[0] = this_node_id & 0xff; // first byte (LSB)
-    addr.u8[1] = this_node_id >> 8 & 0xff; // second byte (MSB) 
-
-    send_data(stage_buffer, offset - stage_buffer, &addr);
+    send_data(stage_buffer, offset - stage_buffer, this_node_id);
 
     return 0;
 }
@@ -274,7 +325,7 @@ static int __raft_send_appendentries(
     // copy type first (need just one byte)
     *offset = 0xff & MSG_APPENDENTRIES;
     offset += 1;
-    // copy message entry message
+    // copy appendentry message
     // each message might be comprised of multiple "entries"
     // 1. copy just the message metadata first (see struct)
     memcpy(offset, m, sizeof(msg_appendentries_t));
@@ -306,11 +357,7 @@ static int __raft_send_appendentries(
 
     unsigned short this_node_id = (unsigned short)raft_node_get_id(node);
 
-    linkaddr_t addr;
-    addr.u8[0] = this_node_id & 0xff; // first byte (LSB)
-    addr.u8[1] = this_node_id >> 8 & 0xff; // second byte (MSB) 
-
-    send_data(stage_buffer, offset - stage_buffer, &addr);
+    send_data(stage_buffer, offset - stage_buffer, this_node_id);
 
     return 0;
 }
@@ -447,7 +494,48 @@ raft_cbs_t raft_funcs = {
 // Contiki Process Declarations
 PROCESS(main_process, "Main Process");
 PROCESS(raft_periodic_process, "Raft Periodic Process");
+PROCESS(client_process, "Client Process");
 AUTOSTART_PROCESSES(&main_process);
+/*---------------------------------------------------------------------------*/
+
+void client_new_message(raft_server_t *raft_server)
+{
+    client_message_t msg = {};
+    *(msg.buf) = 0x0001; // 1
+
+    unsigned short leader_node_id = raft_get_current_leader(raft_server);
+
+    // begin serialize
+    memset(stage_buffer, 0, PACKETBUF_SIZE);
+    unsigned char *offset = stage_buffer;
+    // copy type first (need just one byte)
+    *offset = 0xff & MSG_CLIENT;
+    offset += 1;
+
+    memcpy(offset, &msg, sizeof(client_message_t));
+    offset += sizeof(client_message_t);
+
+    send_data(stage_buffer, offset - stage_buffer, leader_node_id);
+}
+
+// client thread
+static struct etimer et_client;
+PROCESS_THREAD(client_process, ev, data)
+{
+  PROCESS_BEGIN();
+
+  while(1) {
+    etimer_set(&et_client, CLOCK_SECOND * 10);
+
+    PROCESS_WAIT_EVENT_UNTIL(ev == PROCESS_EVENT_TIMER);
+
+    // send message to leader
+    // TODO create new client object, breakout into new file
+    client_new_message(raft_server); 
+  }
+
+  PROCESS_END();
+}
 
 /*---------------------------------------------------------------------------*/
 // Raft periodic ticker
@@ -461,7 +549,7 @@ PROCESS_THREAD(raft_periodic_process, ev, data)
 
     PROCESS_WAIT_EVENT_UNTIL(ev == PROCESS_EVENT_TIMER);
 
-    raft_periodic(raft_server, CLOCK_SECOND / 4); // 250ms
+    raft_periodic(raft_server, CLOCK_SECOND * 2); // 100ms
   }
 
   PROCESS_END();
@@ -471,7 +559,7 @@ PROCESS_THREAD(raft_periodic_process, ev, data)
 // Main process
 PROCESS_THREAD(main_process, ev, data)
 {
-    PROCESS_EXITHANDLER(mesh_close(&mesh);)
+    PROCESS_EXITHANDLER(netflood_close(&netflood);)
     PROCESS_BEGIN();
 
     memset(sv, 0, sizeof(server_t));
@@ -480,18 +568,13 @@ PROCESS_THREAD(main_process, ev, data)
     random_init(node_id);
 
     raft_server = raft_new();
-    raft_set_election_timeout(raft_server, CLOCK_CONF_SECOND * 5);
-    raft_set_request_timeout(raft_server, CLOCK_CONF_SECOND * 2.5);
-
     raft_set_callbacks(raft_server, &raft_funcs, NULL);
+
+    raft_set_election_timeout(raft_server, CLOCK_SECOND * 20);
+    raft_set_request_timeout(raft_server, CLOCK_SECOND * 10);
 
     // add self
     raft_add_node(raft_server, sv->node_id, 1);
-
-    // node_id 1 becomes leader 
-    if (sv->node_id == 1) {
-        raft_become_leader(raft_server);
-    }
 
     // add other nodes
     // TODO this is static for now
@@ -504,10 +587,15 @@ PROCESS_THREAD(main_process, ev, data)
         raft_add_node(raft_server, i, 0);
     }    
 
-    mesh_open(&mesh, 132, &callbacks);
+    netflood_open(&netflood, CLOCK_SECOND, 132, &callbacks);
 
     // start periodic_raft
     process_start(&raft_periodic_process, NULL);
+
+    if (sv->node_id == 1){
+        // start one client on one node
+        // process_start(&client_process, NULL);
+    }
 
     PROCESS_END();
 }
