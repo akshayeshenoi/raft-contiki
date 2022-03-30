@@ -13,7 +13,7 @@
 #include "proto.h"
 
 static struct netflood_conn netflood;
-static int netflood_seq = 0;
+static int netflood_seq;
 static server_t server;
 static server_t *sv = &server;
 
@@ -21,8 +21,10 @@ static raft_server_t *raft_server;
 
 static unsigned char stage_buffer[PACKETBUF_SIZE];
 
-#define HEADER_SIZE 4 // only receiver ID for now
+#define HEADER_SIZE 4 // only receiver and sender ID for now
 #define PAYLOAD_SIZE (PACKETBUF_SIZE - HEADER_SIZE)
+#define ELECTION_TIMEOUT CLOCK_SECOND * 50
+#define REQUEST_TIMEOUT CLOCK_SECOND * 2
 
 /*---------------------------------------------------------------------------*/
 // logging
@@ -54,10 +56,11 @@ void send_data(void *data, size_t len, unsigned short nodeid)
 {
     PRINT_FN_DBG();
 
-    // make space for receiver node ID
-    memmove(((unsigned char*)data) + sizeof(unsigned short), data, len);
-    memcpy(data, &nodeid, sizeof(unsigned short));
-    len += sizeof(unsigned short);
+    // make space for sender and receiver node ID
+    memmove(((unsigned char*)data) + 2 * sizeof(unsigned short), data, len);
+    memcpy(data, &nodeid, sizeof(unsigned short)); // receiver id
+    memcpy(((unsigned char*)data) + sizeof(unsigned short), &sv->node_id, sizeof(unsigned short)); // sender id
+    len += 2 * sizeof(unsigned short);
 
     packetbuf_copyfrom(data, len);
     netflood_send(&netflood, netflood_seq++);
@@ -74,19 +77,16 @@ static void timedout(struct netflood_conn *c)
 }
 
 // forward refs
-static void __handle_msg_appendentries(unsigned char* buf_offset, int buf_len, unsigned short recv_nodeid);
-static void __handle_msg_appendentries_response(unsigned char* buf_offset, int buf_len, unsigned short recv_nodeid);
-static void __handle_msg_requestvote(unsigned char* buf_offset, int buf_len, unsigned short recv_nodeid);
-static void __handle_msg_requestvote_response(unsigned char* buf_offset, int buf_len, unsigned short recv_nodeid);
-static void __handle_msg_client(unsigned char* buf_offset, int buf_len, unsigned short recv_nodeid);
-static void __handle_msg_client_response(unsigned char* buf_offset, int buf_len, unsigned short recv_nodeid);
+static void __handle_msg_appendentries(unsigned char* buf_offset, int buf_len, unsigned short sender_nodeid);
+static void __handle_msg_appendentries_response(unsigned char* buf_offset, int buf_len, unsigned short sender_nodeid);
+static void __handle_msg_requestvote(unsigned char* buf_offset, int buf_len, unsigned short sender_nodeid);
+static void __handle_msg_requestvote_response(unsigned char* buf_offset, int buf_len, unsigned short sender_nodeid);
+static void __handle_msg_client(unsigned char* buf_offset, int buf_len, unsigned short sender_nodeid);
+static void __handle_msg_client_response(unsigned char* buf_offset, int buf_len, unsigned short sender_nodeid);
 
 static int recv(struct netflood_conn *c, const linkaddr_t *from,
 	       const linkaddr_t *originator, uint8_t seqno, uint8_t hops)
 {
-    __printf(TRACE, "Data received from %d.%d: size: %d\n",
-           originator->u8[0], originator->u8[1], packetbuf_datalen());
-
     unsigned char *buf_offset = packetbuf_dataptr();
     int buf_len = packetbuf_datalen();
 
@@ -97,7 +97,11 @@ static int recv(struct netflood_conn *c, const linkaddr_t *from,
 
     buf_offset += sizeof(unsigned short);
 
-    unsigned short recv_nodeid = (originator->u8[0] & 0xff) + (originator->u8[1] >> 8 & 0xff);
+    // get sender id
+    unsigned short sender_nodeid; 
+    memcpy(&sender_nodeid, buf_offset, sizeof(unsigned short));
+
+    buf_offset += sizeof(unsigned short);
 
     // get message type from the first byte
     peer_message_type_e msgtype = (peer_message_type_e)*buf_offset;
@@ -110,32 +114,32 @@ static int recv(struct netflood_conn *c, const linkaddr_t *from,
             // TODO dynamic later
             break;
         case MSG_APPENDENTRIES:
-            __printf(DEBUG, "MSG_APPENDENTRIES received from %d\n", recv_nodeid);
-            __handle_msg_appendentries(buf_offset, buf_len, recv_nodeid);
+            __printf(DEBUG, "MSG_APPENDENTRIES received from %d\n", sender_nodeid);
+            __handle_msg_appendentries(buf_offset, buf_len, sender_nodeid);
             break;
         case MSG_APPENDENTRIES_RESPONSE:
-            __printf(DEBUG, "MSG_APPENDENTRIES_RESPONSE received from %d\n", recv_nodeid);
-            __handle_msg_appendentries_response(buf_offset, buf_len, recv_nodeid);
+            __printf(DEBUG, "MSG_APPENDENTRIES_RESPONSE received from %d\n", sender_nodeid);
+            __handle_msg_appendentries_response(buf_offset, buf_len, sender_nodeid);
             break;
         case MSG_REQUESTVOTE:
-            __printf(DEBUG, "MSG_REQUESTVOTE received from %d\n", recv_nodeid);
-            __handle_msg_requestvote(buf_offset, buf_len, recv_nodeid);
+            __printf(DEBUG, "MSG_REQUESTVOTE received from %d\n", sender_nodeid);
+            __handle_msg_requestvote(buf_offset, buf_len, sender_nodeid);
             break;
         case MSG_REQUESTVOTE_RESPONSE:
-            __printf(DEBUG, "MSG_REQUESTVOTE_RESPONSE received from %d\n", recv_nodeid);
-            __handle_msg_requestvote_response(buf_offset, buf_len, recv_nodeid);
+            __printf(DEBUG, "MSG_REQUESTVOTE_RESPONSE received from %d\n", sender_nodeid);
+            __handle_msg_requestvote_response(buf_offset, buf_len, sender_nodeid);
             break;
         case MSG_LEAVE:
             break;
         case MSG_LEAVE_RESPONSE:
             break;
         case MSG_CLIENT:
-            __printf(DEBUG, "MSG_CLIENT received from %d\n", recv_nodeid);
-            __handle_msg_client(buf_offset, buf_len, recv_nodeid);
+            __printf(DEBUG, "MSG_CLIENT received from %d\n", sender_nodeid);
+            __handle_msg_client(buf_offset, buf_len, sender_nodeid);
             break;
         case MSG_CLIENT_RESPONSE:
-            __printf(DEBUG, "MSG_CLIENT_RESPONSE received from %d\n", recv_nodeid);
-            __handle_msg_client_response(buf_offset, buf_len, recv_nodeid);
+            __printf(DEBUG, "MSG_CLIENT_RESPONSE received from %d\n", sender_nodeid);
+            __handle_msg_client_response(buf_offset, buf_len, sender_nodeid);
             break;
     }
     return 1;
@@ -149,10 +153,10 @@ const static struct netflood_callbacks callbacks = {
 /*---------------------------------------------------------------------------*/
 // raft message handlers
 
-static void __handle_msg_appendentries(unsigned char* buf_offset, int buf_len, unsigned short recv_nodeid)
+static void __handle_msg_appendentries(unsigned char* buf_offset, int buf_len, unsigned short sender_nodeid)
 {
     PRINT_FN_DBG();
-    raft_node_t* node = raft_get_node(raft_server, recv_nodeid);
+    raft_node_t* node = raft_get_node(raft_server, sender_nodeid);
     // skip type byte first
     buf_offset += 1;
 
@@ -192,13 +196,13 @@ static void __handle_msg_appendentries(unsigned char* buf_offset, int buf_len, u
     memcpy(offset, &msg_response.aer, sizeof(msg_appendentries_response_t));
     offset += sizeof(msg_appendentries_response_t); 
 
-    send_data(stage_buffer, offset - stage_buffer, recv_nodeid);
+    send_data(stage_buffer, offset - stage_buffer, sender_nodeid);
 }
 
-static void __handle_msg_appendentries_response(unsigned char* buf_offset, int buf_len, unsigned short recv_nodeid)
+static void __handle_msg_appendentries_response(unsigned char* buf_offset, int buf_len, unsigned short sender_nodeid)
 {
     PRINT_FN_DBG();
-    raft_node_t* node = raft_get_node(raft_server, recv_nodeid);
+    raft_node_t* node = raft_get_node(raft_server, sender_nodeid);
     // skip type byte first
     buf_offset += 1;
 
@@ -209,10 +213,10 @@ static void __handle_msg_appendentries_response(unsigned char* buf_offset, int b
     assert(e == 0);
 }
 
-static void __handle_msg_requestvote(unsigned char* buf_offset, int buf_len, unsigned short recv_nodeid)
+static void __handle_msg_requestvote(unsigned char* buf_offset, int buf_len, unsigned short sender_nodeid)
 {
     PRINT_FN_DBG();
-    raft_node_t* node = raft_get_node(raft_server, recv_nodeid);
+    raft_node_t* node = raft_get_node(raft_server, sender_nodeid);
     // skip type byte first
     buf_offset += 1;
 
@@ -237,13 +241,13 @@ static void __handle_msg_requestvote(unsigned char* buf_offset, int buf_len, uns
     memcpy(offset, &msg_response.rvr, sizeof(msg_requestvote_response_t));
     offset += sizeof(msg_requestvote_response_t); 
 
-    send_data(stage_buffer, offset - stage_buffer, recv_nodeid);
+    send_data(stage_buffer, offset - stage_buffer, sender_nodeid);
 }
 
-static void __handle_msg_requestvote_response(unsigned char* buf_offset, int buf_len, unsigned short recv_nodeid)
+static void __handle_msg_requestvote_response(unsigned char* buf_offset, int buf_len, unsigned short sender_nodeid)
 {
     PRINT_FN_DBG();
-    raft_node_t* node = raft_get_node(raft_server, recv_nodeid);
+    raft_node_t* node = raft_get_node(raft_server, sender_nodeid);
     // skip type byte first
     buf_offset += 1;
 
@@ -254,10 +258,10 @@ static void __handle_msg_requestvote_response(unsigned char* buf_offset, int buf
     assert(e == 0);
 }
 
-static void __handle_msg_client(unsigned char* buf_offset, int buf_len, unsigned short recv_nodeid)
+static void __handle_msg_client(unsigned char* buf_offset, int buf_len, unsigned short sender_nodeid)
 {
     PRINT_FN_DBG();
-    // raft_node_t* node = raft_get_node(raft_server, recv_nodeid);
+    // raft_node_t* node = raft_get_node(raft_server, sender_nodeid);
     // skip type byte first
     buf_offset += 1;
 
@@ -545,11 +549,11 @@ PROCESS_THREAD(raft_periodic_process, ev, data)
   PROCESS_BEGIN();
 
   while(1) {
-    etimer_set(&et_periodic, CLOCK_SECOND);
+    etimer_set(&et_periodic, CLOCK_SECOND / 5);
 
     PROCESS_WAIT_EVENT_UNTIL(ev == PROCESS_EVENT_TIMER);
 
-    raft_periodic(raft_server, CLOCK_SECOND * 2); // 100ms
+    raft_periodic(raft_server, CLOCK_SECOND / 5); // 100ms
   }
 
   PROCESS_END();
@@ -570,8 +574,8 @@ PROCESS_THREAD(main_process, ev, data)
     raft_server = raft_new();
     raft_set_callbacks(raft_server, &raft_funcs, NULL);
 
-    raft_set_election_timeout(raft_server, CLOCK_SECOND * 20);
-    raft_set_request_timeout(raft_server, CLOCK_SECOND * 10);
+    raft_set_election_timeout(raft_server, ELECTION_TIMEOUT);
+    raft_set_request_timeout(raft_server, REQUEST_TIMEOUT);
 
     // add self
     raft_add_node(raft_server, sv->node_id, 1);
@@ -585,9 +589,10 @@ PROCESS_THREAD(main_process, ev, data)
             continue; // don't add self
 
         raft_add_node(raft_server, i, 0);
-    }    
+    }
 
-    netflood_open(&netflood, CLOCK_SECOND, 132, &callbacks);
+    netflood_seq = random_rand();
+    netflood_open(&netflood, CLOCK_SECOND * 2, 132, &callbacks);
 
     // start periodic_raft
     process_start(&raft_periodic_process, NULL);
