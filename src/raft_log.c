@@ -32,9 +32,6 @@ typedef struct
     /* the amount of elements in the array */
     int count;
 
-    /* position of the queue */
-    raft_entry_t *front, *back;
-
     /* we compact the log, and thus need to increment the Base Log Index */
     int base;
 
@@ -119,8 +116,6 @@ void log_clear(log_t* me_)
     }
 
     me->count = 0;
-    me->back = NULL;
-    me->front = NULL;
     me->base = 0;
 }
 
@@ -164,7 +159,6 @@ int log_append_entry(log_t* me_, raft_entry_t* ety)
     }
 
     me->count++;
-    me->back = new_ety;
     return 0;
 }
 
@@ -181,23 +175,26 @@ raft_entry_t* log_get_from_idx(log_t* me_, int idx, int *n_etys)
     }
 
     // we get the first entry matching the idx
-    raft_entry_t *ety, *first_ety = NULL;
+    raft_entry_t *ety, *first_match_ety = NULL;
     for(ety = list_head(me->entries_list);
         ety != NULL;
         ety = list_item_next(ety))
     {
         if (ety->idx == idx)
-            first_ety = ety;
+        {
+            first_match_ety = ety;
             break;
+        }
     }
 
     // and count number of entries till last one
     // TODO for now this is just the difference from the tail
     // TODO verify this
-    int logs_till_end_of_log = list_length(me->entries_list) - first_ety->idx;
+    raft_entry_t *last_ety = list_tail(me->entries_list);
+    int logs_till_end_of_log = last_ety->idx - first_match_ety->idx + 1;
 
     *n_etys = logs_till_end_of_log;
-    return first_ety;
+    return first_match_ety;
 }
 
 raft_entry_t* log_get_at_idx(log_t* me_, int idx)
@@ -212,9 +209,6 @@ raft_entry_t* log_get_at_idx(log_t* me_, int idx)
 
     if (me->base + me->count < idx)
         return NULL;
-
-    /* idx starts at 1 */
-    idx -= 1;
 
     raft_entry_t *ety;
     for(ety = list_head(me->entries_list);
@@ -267,9 +261,10 @@ int log_delete(log_t* me_, int idx)
     {
         list_remove(me->entries_list, ety_to_remove);
         memb_free(&raft_entries_mem, ety_to_remove);
+        return 0;
     }
 
-    return 0;
+    return -1;
 }
 
 /********* COMPACTION related *********/
@@ -312,8 +307,6 @@ void log_empty(log_t * me_)
 {
     log_private_t* me = (log_private_t*)me_;
 
-    me->front = 0;
-    me->back = 0;
     me->count = 0;
 }
 

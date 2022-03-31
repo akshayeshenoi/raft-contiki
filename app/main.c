@@ -267,8 +267,9 @@ static void __handle_msg_client(unsigned char* buf_offset, int buf_len, unsigned
 
     // copy message into entry struct
     msg_entry_t entry = {};
-    entry.id = random_rand();
-    memcpy(entry.data.buf, buf_offset, sizeof(client_message_t));
+    entry.id = (unsigned int)random_rand();
+    // TODO ensure this is same size as entry.data.buf
+    memcpy(entry.data.buf, buf_offset, sizeof(client_message_t)); 
 
     // submit to raft library
     msg_entry_response_t entry_response = {};
@@ -508,6 +509,10 @@ void client_new_message(raft_server_t *raft_server)
     *(msg.buf) = 0x0001; // 1
 
     unsigned short leader_node_id = raft_get_current_leader(raft_server);
+    if (leader_node_id == -1) {
+        // possibly electing new leader at the moment
+        return;
+    }
 
     // begin serialize
     memset(stage_buffer, 0, PACKETBUF_SIZE);
@@ -519,6 +524,7 @@ void client_new_message(raft_server_t *raft_server)
     memcpy(offset, &msg, sizeof(client_message_t));
     offset += sizeof(client_message_t);
 
+    __printf(DEBUG, "Client sending msg to leader: %d\n", leader_node_id);
     send_data(stage_buffer, offset - stage_buffer, leader_node_id);
 }
 
@@ -599,7 +605,7 @@ PROCESS_THREAD(main_process, ev, data)
 
     if (sv->node_id == 1){
         // start one client on one node
-        // process_start(&client_process, NULL);
+        process_start(&client_process, NULL);
     }
 
     PROCESS_END();

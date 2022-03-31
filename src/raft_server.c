@@ -465,30 +465,39 @@ int raft_recv_appendentries(
        but different terms), delete the existing entry and all that
        follow it (§5.3) */
     int i;
+    raft_entry_t *ety = ae->entries; 
     for (i = 0; i < ae->n_entries; i++)
     {
-        raft_entry_t* ety = &ae->entries[i];
         int ety_index = ae->prev_log_idx + 1 + i;
         raft_entry_t* existing_ety = raft_get_entry_from_idx(me_, ety_index);
         if (existing_ety && existing_ety->term != ety->term && me->commit_idx < ety_index)
         {
+            // overwrite
             e = raft_delete_entry_from_idx(me_, ety_index);
-            if (0 != e)
+            if (0 != e){
                 goto out;
+                __log(me_, NULL, "raft_delete_entry_from_idx() failed!");
+            }
             break;
         }
         else if (!existing_ety)
             break;
         r->current_idx = ety_index;
+
+        ety = raft_get_next_log_entry(me_, ety);
     }
 
     /* Pick up remainder in case of mismatch or missing entry */
     for (; i < ae->n_entries; i++)
     {
-        e = raft_append_entry(me_, &ae->entries[i]);
+        if(!ety)
+            goto out;
+
+        e = raft_append_entry(me_, ety);
         if (0 != e)
             goto out;
         r->current_idx = ae->prev_log_idx + 1 + i;
+        ety = raft_get_next_log_entry(me_, ety);
     }
 
     /* 4. If leaderCommit > commitIndex, set commitIndex =
