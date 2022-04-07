@@ -288,9 +288,6 @@ int raft_recv_appendentries_response(raft_server_t* me_,
           r->current_idx,
           r->first_idx);
 
-    if (!node)
-        return -1;
-
     if (!raft_is_leader(me_))
         return RAFT_ERR_NOT_LEADER;
 

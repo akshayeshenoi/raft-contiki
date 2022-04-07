@@ -25,6 +25,7 @@ static unsigned char stage_buffer[PACKETBUF_SIZE];
 #define PAYLOAD_SIZE (PACKETBUF_SIZE - HEADER_SIZE)
 #define ELECTION_TIMEOUT CLOCK_SECOND * 50
 #define REQUEST_TIMEOUT CLOCK_SECOND * 2
+#define RAFT_PERIODIC_TICK CLOCK_SECOND / 5
 
 /*---------------------------------------------------------------------------*/
 // logging
@@ -38,7 +39,7 @@ typedef enum {
 #define LOG_LEVEL_CONF DEBUG
 
 void __printf(LOG_LEVEL_E log_level, const char *format, ...)
-{   // log_level = info;
+{
     if (!(log_level >= LOG_LEVEL_CONF)) 
         return;
 
@@ -93,7 +94,7 @@ static int recv(struct netflood_conn *c, const linkaddr_t *from,
     // ensure it's addressed to us
     unsigned short intended_recvr; 
     memcpy(&intended_recvr, buf_offset, sizeof(unsigned short));
-    if (sv->node_id != intended_recvr) return 1;
+    // if (sv->node_id != intended_recvr) return 0;
 
     buf_offset += sizeof(unsigned short);
 
@@ -105,6 +106,9 @@ static int recv(struct netflood_conn *c, const linkaddr_t *from,
 
     // get message type from the first byte
     peer_message_type_e msgtype = (peer_message_type_e)*buf_offset;
+    // __printf(ERR, "Received %s from %d\n", get_peer_message_type(msgtype), sender_nodeid);
+
+    if (sv->node_id != intended_recvr) return 1;
 
     switch (msgtype) {
         case MSG_HANDSHAKE:
@@ -203,6 +207,11 @@ static void __handle_msg_appendentries_response(unsigned char* buf_offset, int b
 {
     PRINT_FN_DBG();
     raft_node_t* node = raft_get_node(raft_server, sender_nodeid);
+    if (!node) {
+        __printf(ERR, "ERR: UNKNOWN NODE! (node id %d)\n", sender_nodeid);
+        return;
+    }
+
     // skip type byte first
     buf_offset += 1;
 
@@ -210,7 +219,17 @@ static void __handle_msg_appendentries_response(unsigned char* buf_offset, int b
     memcpy(&msg_aer, buf_offset, sizeof(msg_appendentries_response_t));
 
     int e = raft_recv_appendentries_response(raft_server, node, &msg_aer);
-    assert(e == 0);
+    if (e != 0) {
+        switch (e)
+        {
+        case RAFT_ERR_NOT_LEADER:
+            __printf(ERR, "RAFT_ERR_NOT_LEADER: I'm not the leader anymore\n");
+            break;
+        default:
+            __printf(ERR, "Unknown error %d! Check trace.\n", e);
+            break;
+        }
+    }
 }
 
 static void __handle_msg_requestvote(unsigned char* buf_offset, int buf_len, unsigned short sender_nodeid)
@@ -255,6 +274,17 @@ static void __handle_msg_requestvote_response(unsigned char* buf_offset, int buf
     memcpy(&msg_rvr, buf_offset, sizeof(msg_requestvote_response_t));
 
     int e = raft_recv_requestvote_response(raft_server, node, &msg_rvr);
+
+    __printf(INFO, "Node %d responded to requestvote for term %d with status: %s\n",
+            sender_nodeid, msg_rvr.term,
+            msg_rvr.vote_granted == 1 ? "granted" :
+            msg_rvr.vote_granted == 0 ? "not granted" : "unknown");
+
+    // are we now the leader?
+    if (raft_is_leader(raft_server)) {
+        // note that this may print more than once
+        __printf(INFO, "I am now the leader\n");
+    }
     assert(e == 0);
 }
 
@@ -311,6 +341,8 @@ static int __raft_send_requestvote(
     unsigned short this_node_id = (unsigned short)raft_node_get_id(node);
 
     send_data(stage_buffer, offset - stage_buffer, this_node_id);
+
+    __printf(INFO, "I am now contesting an election for term: %d\n", m->term);
 
     return 0;
 }
@@ -376,7 +408,9 @@ static int __raft_applylog(
     )
 {
     PRINT_FN_DBG();
-    return -1;
+
+    __printf(INFO, "Submitting value %d to FSM..\n", *(int*)entry->data.buf);
+    return 0;
 }
 
 /** Raft callback for saving voted_for field to disk.
@@ -506,7 +540,7 @@ AUTOSTART_PROCESSES(&main_process);
 void client_new_message(raft_server_t *raft_server)
 {
     client_message_t msg = {};
-    *(msg.buf) = 0x0001; // 1
+    *((int*)msg.buf) = 0x0001; // 1
 
     unsigned short leader_node_id = raft_get_current_leader(raft_server);
     if (leader_node_id == -1) {
@@ -524,7 +558,7 @@ void client_new_message(raft_server_t *raft_server)
     memcpy(offset, &msg, sizeof(client_message_t));
     offset += sizeof(client_message_t);
 
-    __printf(DEBUG, "Client sending msg to leader: %d\n", leader_node_id);
+    __printf(INFO, "Client proposing msg to leader: %d\n", leader_node_id);
     send_data(stage_buffer, offset - stage_buffer, leader_node_id);
 }
 
@@ -555,11 +589,11 @@ PROCESS_THREAD(raft_periodic_process, ev, data)
   PROCESS_BEGIN();
 
   while(1) {
-    etimer_set(&et_periodic, CLOCK_SECOND / 5);
+    etimer_set(&et_periodic, RAFT_PERIODIC_TICK);
 
     PROCESS_WAIT_EVENT_UNTIL(ev == PROCESS_EVENT_TIMER);
 
-    raft_periodic(raft_server, CLOCK_SECOND / 5); // 100ms
+    raft_periodic(raft_server, RAFT_PERIODIC_TICK); // 100ms
   }
 
   PROCESS_END();
