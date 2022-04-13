@@ -66,6 +66,12 @@ const char * get_peer_message_type(peer_message_type_e pmte)
     case MSG_APPENDENTRIES_RESPONSE:
         return "MSG_APPENDENTRIES_RESPONSE";
         break;
+    case MSG_CLIENT:
+        return "MSG_CLIENT";
+        break;
+    case MSG_CLIENT_RESPONSE:
+        return "MSG_CLIENT_RESPONSE";
+        break;
     default:
         return "UNKNOWN";
     }

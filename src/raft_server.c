@@ -610,7 +610,7 @@ int raft_recv_requestvote(raft_server_t* me_,
 
 done:
     __log(me_, node, "node requested vote: %d replying: %s",
-          node,
+          raft_node_get_id(node),
           r->vote_granted == 1 ? "granted" :
           r->vote_granted == 0 ? "not granted" : "unknown");
 
@@ -632,9 +632,11 @@ int raft_recv_requestvote_response(raft_server_t* me_,
 {
     raft_server_private_t* me = (raft_server_private_t*)me_;
 
-    __log(me_, node, "node responded to requestvote status: %s",
-          r->vote_granted == 1 ? "granted" :
-          r->vote_granted == 0 ? "not granted" : "unknown");
+    __log(me_, node, "node responded to requestvote status:%s ct:%d rt:%d",
+        r->vote_granted == 1 ? "granted" :
+        r->vote_granted == 0 ? "not granted" : "unknown",
+        me->current_term,
+        r->term);
 
     if (!raft_is_candidate(me_))
     {
@@ -656,12 +658,6 @@ int raft_recv_requestvote_response(raft_server_t* me_,
          * This happens if the network is pretty choppy. */
         return 0;
     }
-
-    __log(me_, node, "node responded to requestvote status:%s ct:%d rt:%d",
-          r->vote_granted == 1 ? "granted" :
-          r->vote_granted == 0 ? "not granted" : "unknown",
-          me->current_term,
-          r->term);
 
     switch (r->vote_granted)
     {
