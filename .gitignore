@@ -3,3 +3,12 @@
 *~
 libcraft.so
 libcraft.a
+*.a
+*.map
+*.sky
+obj_sky
+*.csc
+*.co
+symbols.c
+symbols.h
+.vscode

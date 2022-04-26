@@ -58,10 +58,15 @@ int raft_get_num_nodes(raft_server_t* me_)
 int raft_get_num_voting_nodes(raft_server_t* me_)
 {
     raft_server_private_t* me = (raft_server_private_t*)me_;
-    int i, num = 0;
-    for (i = 0; i < me->num_nodes; i++)
-        if (raft_node_is_active(me->nodes[i]) && raft_node_is_voting(me->nodes[i]))
+
+    raft_node_t* node; int num = 0;
+    for(node = list_head(me->nodes_list);
+        node != NULL;
+        node = list_item_next(node))
+    {
+        if (raft_node_is_active(node) && raft_node_is_voting(node))
             num++;
+    }
     return num;
 }
 
@@ -152,11 +157,15 @@ int raft_get_state(raft_server_t* me_)
 raft_node_t* raft_get_node(raft_server_t *me_, int nodeid)
 {
     raft_server_private_t* me = (raft_server_private_t*)me_;
-    int i;
 
-    for (i = 0; i < me->num_nodes; i++)
-        if (nodeid == raft_node_get_id(me->nodes[i]))
-            return me->nodes[i];
+    raft_node_t* node;
+    for(node = list_head(me->nodes_list);
+        node != NULL;
+        node = list_item_next(node))
+    {
+        if (nodeid == raft_node_get_id(node))
+            return node;
+    }
 
     return NULL;
 }
@@ -164,11 +173,16 @@ raft_node_t* raft_get_node(raft_server_t *me_, int nodeid)
 raft_node_t* raft_get_my_node(raft_server_t *me_)
 {
     raft_server_private_t* me = (raft_server_private_t*)me_;
-    int i;
 
-    for (i = 0; i < me->num_nodes; i++)
-        if (raft_get_nodeid(me_) == raft_node_get_id(me->nodes[i]))
-            return me->nodes[i];
+    // TODO not sure why we can't return me->node directly?
+    raft_node_t* node;
+    for(node = list_head(me->nodes_list);
+        node != NULL;
+        node = list_item_next(node))
+    {
+        if (raft_get_nodeid(me_) == raft_node_get_id(node))
+            return node;
+    }
 
     return NULL;
 }
@@ -176,7 +190,16 @@ raft_node_t* raft_get_my_node(raft_server_t *me_)
 raft_node_t* raft_get_node_from_idx(raft_server_t* me_, const int idx)
 {
     raft_server_private_t* me = (raft_server_private_t*)me_;
-    return me->nodes[idx];
+
+    raft_node_t* node; int i;
+    for(node = list_head(me->nodes_list), i = 0;
+        node != NULL && i < me->num_nodes;
+        node = list_item_next(node), i++)
+    {
+        if (i == idx)
+            return node;
+    }
+    return NULL;
 }
 
 int raft_get_current_leader(raft_server_t* me_)

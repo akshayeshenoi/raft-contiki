@@ -72,16 +72,21 @@ typedef enum {
 
 typedef struct
 {
-    void *buf;
-
-    unsigned int len;
+    // fixed data
+    unsigned char buf[2];
 } raft_entry_data_t;
 
 /** Entry that is stored in the server's entry log. */
-typedef struct
+struct raft_entry_struct
 {
+    // pointer to form linked list
+    struct raft_entry_struct *next;
+
     /** the entry's term at the point it was created */
     unsigned int term;
+
+    /** the entry's index */
+    unsigned int idx;
 
     /** the entry's unique ID */
     unsigned int id;
@@ -90,7 +95,9 @@ typedef struct
     int type;
 
     raft_entry_data_t data;
-} raft_entry_t;
+}; 
+
+typedef struct raft_entry_struct raft_entry_t;
 
 /** Message sent from client to server.
  * The client sends this message to a server with the intention of having it
@@ -361,6 +368,8 @@ typedef struct
      * For safety reasons this callback MUST flush the change to disk.
      * Return 0 on success.
      * Return RAFT_ERR_SHUTDOWN if you want the server to shutdown. */
+    // NOTE we don't have disk, so maybe we don't need a separate log?
+    // access the raft library log directly.
     func_logentry_event_f log_offer;
 
     /** Callback for removing the oldest entry from the log
@@ -426,18 +435,13 @@ void raft_set_callbacks(raft_server_t* me, raft_cbs_t* funcs, void* user_data);
  *  This call MUST be made in the same order as the other raft nodes.
  *  This is because the node ID is assigned depending on when this call is made
  *
- * @param[in] user_data The user data for the node.
- *  This is obtained using raft_node_get_udata.
- *  Examples of what this could be:
- *  - void* pointing to implementor's networking data
- *  - a (IP,Port) tuple
  * @param[in] id The integer ID of this node
  *  This is used for identifying clients across sessions.
  * @param[in] is_self Set to 1 if this "node" is this server
  * @return
  *  node if it was successfully added;
  *  NULL if the node already exists */
-raft_node_t* raft_add_node(raft_server_t* me, void* user_data, int id, int is_self);
+raft_node_t* raft_add_node(raft_server_t* me, int id, int is_self);
 
 #define raft_add_peer raft_add_node
 
@@ -447,7 +451,7 @@ raft_node_t* raft_add_node(raft_server_t* me, void* user_data, int id, int is_se
  * @return
  *  node if it was successfully added;
  *  NULL if the node already exists */
-raft_node_t* raft_add_non_voting_node(raft_server_t* me_, void* udata, int id, int is_self);
+raft_node_t* raft_add_non_voting_node(raft_server_t* me_, int id, int is_self);
 
 /** Remove node.
  * @param node The node to be removed. */
@@ -628,14 +632,6 @@ int raft_node_get_next_idx(raft_node_t* node);
 /**
  * @return this node's user data */
 int raft_node_get_match_idx(raft_node_t* me);
-
-/**
- * @return this node's user data */
-void* raft_node_get_udata(raft_node_t* me);
-
-/**
- * Set this node's user data */
-void raft_node_set_udata(raft_node_t* me, void* user_data);
 
 /**
  * @param[in] idx The entry's index
@@ -869,5 +865,11 @@ int raft_node_is_voting_committed(raft_node_t* me_);
  * This should be used for creating the membership snapshot.
  **/
 int raft_node_is_addition_committed(raft_node_t* me_);
+
+/**
+ * Get next entry after current entry.
+ * NULL if last
+ */
+raft_entry_t* raft_get_next_log_entry(raft_server_t *me_, raft_entry_t* ety);
 
 #endif /* RAFT_H_ */
