@@ -34,4 +34,6 @@ clean-raft:
 	$(MAKE) clean
 
 CONTIKI_WITH_RIME = 1
+CFLAGS += -DNETSTACK_CONF_MAC=csma_driver
+CFLAGS += -DNETSTACK_CONF_RDC=nullrdc_driver
 include $(CONTIKI)/Makefile.include
