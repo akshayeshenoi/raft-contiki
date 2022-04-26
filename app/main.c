@@ -14,6 +14,7 @@
 
 static struct netflood_conn netflood;
 static int netflood_seq;
+
 static server_t server;
 static server_t *sv = &server;
 
@@ -24,8 +25,8 @@ static unsigned char stage_buffer[PACKETBUF_SIZE];
 #define HEADER_SIZE 4 // only receiver and sender ID for now
 #define PAYLOAD_SIZE (PACKETBUF_SIZE - HEADER_SIZE)
 #define ELECTION_TIMEOUT CLOCK_SECOND * 50
-#define REQUEST_TIMEOUT CLOCK_SECOND * 2
-#define RAFT_PERIODIC_TICK CLOCK_SECOND / 5
+#define REQUEST_TIMEOUT CLOCK_SECOND * 8
+#define RAFT_PERIODIC_TICK CLOCK_SECOND * 4
 
 /*---------------------------------------------------------------------------*/
 // logging
@@ -36,7 +37,7 @@ typedef enum {
     ERR
 } LOG_LEVEL_E;
 
-#define LOG_LEVEL_CONF DEBUG
+#define LOG_LEVEL_CONF INFO
 
 void __printf(LOG_LEVEL_E log_level, const char *format, ...)
 {
@@ -94,7 +95,7 @@ static int recv(struct netflood_conn *c, const linkaddr_t *from,
     // ensure it's addressed to us
     unsigned short intended_recvr; 
     memcpy(&intended_recvr, buf_offset, sizeof(unsigned short));
-    // if (sv->node_id != intended_recvr) return 0;
+    if (sv->node_id != intended_recvr) return 1;
 
     buf_offset += sizeof(unsigned short);
 
@@ -106,9 +107,6 @@ static int recv(struct netflood_conn *c, const linkaddr_t *from,
 
     // get message type from the first byte
     peer_message_type_e msgtype = (peer_message_type_e)*buf_offset;
-    // __printf(ERR, "Received %s from %d\n", get_peer_message_type(msgtype), sender_nodeid);
-
-    if (sv->node_id != intended_recvr) return 1;
 
     switch (msgtype) {
         case MSG_HANDSHAKE:
@@ -275,10 +273,12 @@ static void __handle_msg_requestvote_response(unsigned char* buf_offset, int buf
 
     int e = raft_recv_requestvote_response(raft_server, node, &msg_rvr);
 
-    __printf(INFO, "Node %d responded to requestvote for term %d with status: %s\n",
-            sender_nodeid, msg_rvr.term,
+    __printf(DEBUG, "Node %d responded to requestvote status:%s ct:%d rt:%d\n",
+            sender_nodeid,
             msg_rvr.vote_granted == 1 ? "granted" :
-            msg_rvr.vote_granted == 0 ? "not granted" : "unknown");
+            msg_rvr.vote_granted == 0 ? "not granted" : "unknown",
+            raft_get_current_term(raft_server),
+            msg_rvr.term);
 
     // are we now the leader?
     if (raft_is_leader(raft_server)) {
@@ -540,7 +540,7 @@ AUTOSTART_PROCESSES(&main_process);
 void client_new_message(raft_server_t *raft_server)
 {
     client_message_t msg = {};
-    *((int*)msg.buf) = 0x0001; // 1
+    *((int*)msg.buf) = random_rand() % 10;
 
     unsigned short leader_node_id = raft_get_current_leader(raft_server);
     if (leader_node_id == -1) {
@@ -559,7 +559,15 @@ void client_new_message(raft_server_t *raft_server)
     offset += sizeof(client_message_t);
 
     __printf(INFO, "Client proposing msg to leader: %d\n", leader_node_id);
-    send_data(stage_buffer, offset - stage_buffer, leader_node_id);
+
+    if (leader_node_id != sv->node_id) {
+        send_data(stage_buffer, offset - stage_buffer, leader_node_id);
+    }
+    else {
+        // we are the leader, skip the network
+        __handle_msg_client(stage_buffer, offset - stage_buffer, leader_node_id);
+    }
+
 }
 
 // client thread
@@ -574,8 +582,10 @@ PROCESS_THREAD(client_process, ev, data)
     PROCESS_WAIT_EVENT_UNTIL(ev == PROCESS_EVENT_TIMER);
 
     // send message to leader
-    // TODO create new client object, breakout into new file
-    client_new_message(raft_server); 
+    // send based on some probability (since everyone will try to send)
+    if (random_rand() % 5 == 0) {
+        client_new_message(raft_server);
+    }
   }
 
   PROCESS_END();
@@ -636,11 +646,8 @@ PROCESS_THREAD(main_process, ev, data)
 
     // start periodic_raft
     process_start(&raft_periodic_process, NULL);
-
-    if (sv->node_id == 1){
-        // start one client on one node
-        process_start(&client_process, NULL);
-    }
+    // start client
+    process_start(&client_process, NULL);
 
     PROCESS_END();
 }
