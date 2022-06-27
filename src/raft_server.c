@@ -379,7 +379,14 @@ int raft_recv_appendentries_response(raft_server_t* me_,
     if (raft_get_entry_from_idx(me_, raft_node_get_next_idx(node)))
         raft_send_appendentries(me_, node);
 
-    /* periodic applies committed entries lazily */
+    /* apply now */
+    if (me->last_applied_idx < raft_get_commit_idx(me_) &&
+        !raft_snapshot_is_in_progress(me_))
+    {
+        int e = raft_apply_entry(me_);
+        if (-1 != e) 
+            return e;
+    }
 
     return 0;
 }
@@ -503,6 +510,15 @@ int raft_recv_appendentries(
     {
         int last_log_idx = max(raft_get_current_idx(me_), 1);
         raft_set_commit_idx(me_, min(last_log_idx, ae->leader_commit));
+    }
+
+    /* 5. apply commit */
+    if (me->last_applied_idx < raft_get_commit_idx(me_) &&
+        !raft_snapshot_is_in_progress(me_))
+    {
+        int e = raft_apply_entry(me_);
+        if (-1 != e)
+            goto out;
     }
 
 out:

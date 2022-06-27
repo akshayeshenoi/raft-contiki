@@ -24,9 +24,9 @@ static unsigned char stage_buffer[PACKETBUF_SIZE];
 
 #define HEADER_SIZE 4 // only receiver and sender ID for now
 #define PAYLOAD_SIZE (PACKETBUF_SIZE - HEADER_SIZE)
-#define ELECTION_TIMEOUT CLOCK_SECOND * 50
-#define REQUEST_TIMEOUT CLOCK_SECOND * 8
-#define RAFT_PERIODIC_TICK CLOCK_SECOND * 4
+#define ELECTION_TIMEOUT CLOCK_SECOND * 25
+#define REQUEST_TIMEOUT CLOCK_SECOND * 4
+#define RAFT_PERIODIC_TICK CLOCK_SECOND
 
 /*---------------------------------------------------------------------------*/
 // logging
@@ -409,7 +409,8 @@ static int __raft_applylog(
 {
     PRINT_FN_DBG();
 
-    __printf(INFO, "Submitting value %d to FSM..\n", *(int*)entry->data.buf);
+    // __printf(INFO, "Submitting value %d to FSM..\n", *(int*)entry->data.buf);
+    __printf(INFO, "APPLY MSG#:%d\n", *(int*)entry->data.buf);
     return 0;
 }
 
@@ -537,10 +538,13 @@ PROCESS(client_process, "Client Process");
 AUTOSTART_PROCESSES(&main_process);
 /*---------------------------------------------------------------------------*/
 
+static unsigned short uniq_msg = 0;
+
 void client_new_message(raft_server_t *raft_server)
 {
     client_message_t msg = {};
-    *((int*)msg.buf) = random_rand() % 10;
+    // *((int*)msg.buf) = random_rand() % 10;
+    *((int*)msg.buf) = uniq_msg++;
 
     unsigned short leader_node_id = raft_get_current_leader(raft_server);
     if (leader_node_id == -1) {
@@ -558,7 +562,8 @@ void client_new_message(raft_server_t *raft_server)
     memcpy(offset, &msg, sizeof(client_message_t));
     offset += sizeof(client_message_t);
 
-    __printf(INFO, "Client proposing msg to leader: %d\n", leader_node_id);
+    // __printf(INFO, "Client proposing msg to leader: %d\n", leader_node_id);
+    __printf(INFO, "SUBMIT MSG#:%d\n", (uniq_msg - 1));
 
     if (leader_node_id != sv->node_id) {
         send_data(stage_buffer, offset - stage_buffer, leader_node_id);
@@ -646,8 +651,11 @@ PROCESS_THREAD(main_process, ev, data)
 
     // start periodic_raft
     process_start(&raft_periodic_process, NULL);
-    // start client
-    process_start(&client_process, NULL);
+
+    if (node_id == 3) {
+        // start client
+        process_start(&client_process, NULL);
+    }
 
     PROCESS_END();
 }
